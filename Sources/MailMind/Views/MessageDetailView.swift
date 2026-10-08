@@ -114,7 +114,7 @@ struct MessageDetailView: View {
                         .lineLimit(1)
                 }
                 if let account = state.account(id: message.accountID) {
-                    Text("· \(account.displayName)")
+                    Text(message.to.isEmpty ? "收件账户：\(account.displayName)" : "· \(account.displayName)")
                 }
             }
             .font(.caption)

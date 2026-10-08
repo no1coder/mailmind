@@ -209,3 +209,19 @@ struct FieldBox: ViewModifier {
 extension View {
     func fieldBox() -> some View { modifier(FieldBox()) }
 }
+
+/// 应用图标（打包后读取 AppIcon.icns；开发模式下用近似的占位图）。
+struct AppLogo: View {
+    var size: CGFloat = 44
+
+    var body: some View {
+        if Bundle.main.bundleIdentifier != nil {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: size * 1.25, height: size * 1.25)
+                .frame(width: size, height: size)
+        } else {
+            BrandIcon(badge: "", symbol: "envelope.fill", color: Color(hex: 0x6E56F8), size: size)
+        }
+    }
+}

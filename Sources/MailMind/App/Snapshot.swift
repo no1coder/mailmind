@@ -5,7 +5,11 @@ import SwiftUI
 /// 用法：swift run MailMind --snapshot <输出目录> [--light]
 @MainActor
 enum Snapshot {
+    /// 截图模式：侧边栏的毛玻璃材质无法离屏渲染，改用纯色背景。
+    static var isActive = false
+
     static func run(to dir: URL, dark: Bool) {
+        isActive = true
         Keychain.disabled = true // 不读取真实钥匙串，避免弹出授权框
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let p = MailProviderPresets.all
@@ -28,10 +32,22 @@ enum Snapshot {
         shot("settings-ai", 660, 560, AISettingsView())
 
         let state = AppState.shared
+        state.settings.accounts = Demo.accounts
+        for (i, a) in Demo.accounts.enumerated() {
+            state.accountStatus[a.id] = AccountStatus(lastSync: Date(), error: nil, realtime: i != 1)
+        }
         state.filter = .inbox
         state.messages = Demo.messages
+        state.unreadCounts = ["@important": 2, "@action": 2, "@all": 3, "重要": 1, "工作": 1, "通知": 1]
         state.selectedIDs = [Demo.messages[0].id]
-        shot("main", 1280, 780, ContentView())
+        // NavigationSplitView 的侧边栏无法离屏渲染，截图时手动排出三栏
+        shot("main", 1280, 780, HStack(spacing: 0) {
+            SidebarView().frame(width: 220)
+            Divider()
+            MessageListView().frame(width: 400)
+            Divider()
+            MessageDetailView(message: Demo.messages[0])
+        })
     }
 
     static func render<V: View>(_ view: V, width: CGFloat, height: CGFloat, to url: URL, dark: Bool) {
@@ -62,6 +78,12 @@ enum Snapshot {
 enum Demo {
     static let account = MailAccount(displayName: "zhangsan@qq.com", email: "zhangsan@qq.com",
                                      username: "zhangsan@qq.com", host: "imap.qq.com")
+
+    static let accounts: [MailAccount] = [
+        account,
+        MailAccount(displayName: "工作邮箱", email: "zhang@company.com", username: "zhang@company.com", host: "imap.exmail.qq.com"),
+        MailAccount(displayName: "Gmail", email: "zhangsan@gmail.com", username: "zhangsan@gmail.com", host: "imap.gmail.com"),
+    ]
 
     static let messages: [MailMessage] = {
         func m(_ i: Int, _ name: String, _ email: String, _ subject: String, _ headline: String, _ summary: String,

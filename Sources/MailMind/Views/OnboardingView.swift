@@ -34,7 +34,7 @@ struct OnboardingView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            BrandIcon(badge: "", symbol: "envelope.badge.shield.half.filled", color: .accentColor, size: 40)
+            AppLogo(size: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text("欢迎使用 MailMind").font(.title3.bold())
                 Text("三步完成设置，让 AI 帮你管邮件").font(.callout).foregroundStyle(.secondary)

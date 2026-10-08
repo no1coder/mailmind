@@ -35,6 +35,8 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(Snapshot.isActive ? .hidden : .automatic)
+        .background(Snapshot.isActive ? Color(nsColor: .underPageBackgroundColor) : .clear)
     }
 
     private func row(_ item: SidebarItem, _ title: String, _ symbol: String, _ color: Color, count: Int?) -> some View {
