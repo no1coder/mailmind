@@ -14,6 +14,8 @@ enum SidebarItem: Hashable {
     case digest
     case category(MailCategory)
     case account(UUID)
+    /// 转发来源视图（按原收件人地址）
+    case alias(String)
 }
 
 @MainActor
@@ -98,15 +100,23 @@ final class AppState {
     /// 不支持实时推送的邮箱的轮询间隔。
     static let pollIntervalWithoutPush: TimeInterval = 5 * 60
 
+    /// 每分钟执行一次：
+    /// - 全量：每 syncIntervalMinutes 分钟同步所有账户（兜底）
+    /// - 没有实时推送的 IMAP 账户：每 5 分钟
+    /// - 「邮件」App 本地账户：每分钟（只读本地文件，开销很小）
     private func tick() async {
+        let now = Date()
         let interval = TimeInterval(max(1, settings.syncIntervalMinutes) * 60)
-        if lastFullSync.map({ Date().timeIntervalSince($0) >= interval - 5 }) ?? true {
+        if lastFullSync.map({ now.timeIntervalSince($0) >= interval - 5 }) ?? true {
+            lastQuickSync = now
             await sync()
-        } else if lastQuickSync.map({ Date().timeIntervalSince($0) >= Self.pollIntervalWithoutPush - 5 }) ?? true {
-            // 实时推送已连接的账户靠服务器推送；其余账户更频繁地轮询。
-            let noPush = settings.accounts.filter { $0.enabled && accountStatus[$0.id]?.realtime != true }.map(\.id)
-            lastQuickSync = Date()
-            if !noPush.isEmpty { await sync(accounts: Set(noPush)) }
+        } else {
+            var due = Set(settings.accounts.filter { $0.enabled && $0.isAppleMail }.map(\.id))
+            if lastQuickSync.map({ now.timeIntervalSince($0) >= Self.pollIntervalWithoutPush - 5 }) ?? true {
+                lastQuickSync = now
+                due.formUnion(settings.accounts.filter { $0.enabled && !$0.isAppleMail && accountStatus[$0.id]?.realtime != true }.map(\.id))
+            }
+            if !due.isEmpty { await sync(accounts: due) }
         }
         await generateDigestIfDue()
     }
@@ -129,6 +139,7 @@ final class AppState {
         case .inbox, .digest: return .all
         case .category(let c): return .category(c.rawValue)
         case .account(let id): return .account(id)
+        case .alias(let address): return .recipient(address)
         }
     }
 
@@ -305,6 +316,14 @@ final class AppState {
             accountStatus[account.id] = status
         }
         do {
+            if account.isAppleMail {
+                let n = try SyncEngine.syncAppleMail(account: account, initialDays: settings.initialSyncDays,
+                                                     maxMessages: settings.maxMessagesPerSync, db: db)
+                status.error = nil
+                status.lastSync = Date()
+                if n > 0 { reload() }
+                return
+            }
             let credential = try await credential(for: account)
             let n = try await SyncEngine.sync(account: account, credential: credential,
                                               initialDays: settings.initialSyncDays,
@@ -322,7 +341,7 @@ final class AppState {
 
     /// 按当前设置启动 / 停止各账户的实时连接。账户配置变化时调用。
     func refreshRealtime() {
-        let wanted = settings.realtimeEnabled ? settings.accounts.filter(\.enabled) : []
+        let wanted = settings.realtimeEnabled ? settings.accounts.filter { $0.enabled && !$0.isAppleMail } : []
         let wantedIDs = Set(wanted.map(\.id))
         for id in realtimeTasks.keys where !wantedIDs.contains(id) {
             stopRealtime(id)
@@ -578,6 +597,19 @@ final class AppState {
         accountStatus[id] = nil
         if filter == .account(id) { filter = .important }
         reload()
+    }
+
+    // MARK: - 转发来源
+
+    func addForwardAlias(_ address: String, name: String) {
+        let a = ForwardAlias(address: address.trimmed.lowercased(), name: name.trimmed.isEmpty ? address.trimmed : name.trimmed)
+        guard !a.address.isEmpty, !settings.forwardAliases.contains(where: { $0.id == a.id }) else { return }
+        settings.forwardAliases.append(a)
+    }
+
+    func removeForwardAlias(_ alias: ForwardAlias) {
+        settings.forwardAliases.removeAll { $0.id == alias.id }
+        if filter == .alias(alias.address) { filter = .important }
     }
 
     func moveAccounts(from source: IndexSet, to destination: Int) {

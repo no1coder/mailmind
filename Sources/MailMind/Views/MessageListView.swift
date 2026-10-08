@@ -68,6 +68,7 @@ struct MessageListView: View {
         case .inbox, .digest: return "全部邮件"
         case .category(let c): return c.rawValue
         case .account(let id): return state.account(id: id)?.displayName ?? "账户"
+        case .alias(let address): return state.settings.forwardAliases.first { $0.address == address }?.name ?? address
         }
     }
 

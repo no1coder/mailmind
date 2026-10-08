@@ -20,7 +20,7 @@ struct SidebarView: View {
                     row(.category(c), c.rawValue, c.symbol, c.color, count: state.unreadCounts[c.rawValue])
                 }
             }
-            if !state.settings.accounts.isEmpty {
+            if !state.settings.accounts.isEmpty || !state.settings.forwardAliases.isEmpty {
                 Section("账户") {
                     ForEach(state.settings.accounts) { a in
                         AccountRow(account: a, status: state.accountStatus[a.id])
@@ -29,6 +29,14 @@ struct SidebarView: View {
                                 Button("立即同步") { state.syncAccount(a.id) }
                                 Button(a.enabled ? "停用" : "启用") { state.setAccountEnabled(a.id, !a.enabled) }
                                 SettingsLink { Text("管理账户…") }
+                            }
+                    }
+                    ForEach(state.settings.forwardAliases) { alias in
+                        Label(alias.name, systemImage: "arrowshape.turn.up.right")
+                            .help("转发自 \(alias.address)")
+                            .tag(SidebarItem.alias(alias.address))
+                            .contextMenu {
+                                Button("移除此转发视图") { state.removeForwardAlias(alias) }
                             }
                     }
                 }
@@ -74,14 +82,14 @@ struct AccountRow: View {
     private var color: Color {
         guard account.enabled else { return .gray }
         if status?.error != nil { return .red }
-        if status?.realtime == true { return .green }
+        if status?.realtime == true || account.isAppleMail { return .green }
         return .blue
     }
 
     private var help: String {
         guard account.enabled else { return "已停用" }
         if let e = status?.error { return "同步出错：\(e)" }
-        var parts: [String] = [status?.realtime == true ? "实时推送已连接" : "定时轮询"]
+        var parts: [String] = [account.isAppleMail ? "从「邮件」App 读取" : (status?.realtime == true ? "实时推送已连接" : "定时轮询")]
         if let t = status?.lastSync { parts.append("上次同步 \(t.formatted(date: .omitted, time: .shortened))") }
         return parts.joined(separator: " · ")
     }

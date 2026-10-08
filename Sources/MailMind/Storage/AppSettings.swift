@@ -15,6 +15,9 @@ final class AppSettings {
     var accounts: [MailAccount] {
         didSet { defaults.set(try? JSONEncoder().encode(accounts), forKey: "accounts") }
     }
+    var forwardAliases: [ForwardAlias] {
+        didSet { defaults.set(try? JSONEncoder().encode(forwardAliases), forKey: "forwardAliases") }
+    }
 
     // AI
     var aiEnabled: Bool { didSet { defaults.set(aiEnabled, forKey: "aiEnabled") } }
@@ -69,6 +72,7 @@ final class AppSettings {
             "digestMinute": 0,
         ])
         accounts = (d.data(forKey: "accounts")).flatMap { try? JSONDecoder().decode([MailAccount].self, from: $0) } ?? []
+        forwardAliases = (d.data(forKey: "forwardAliases")).flatMap { try? JSONDecoder().decode([ForwardAlias].self, from: $0) } ?? []
         aiEnabled = d.bool(forKey: "aiEnabled")
         aiBaseURL = d.string(forKey: "aiBaseURL") ?? ""
         aiModel = d.string(forKey: "aiModel") ?? ""

@@ -37,7 +37,8 @@ MailMind 让 AI 替你把关：
 |---|---|
 | 📮 **多邮箱统一管理** | QQ、163、126、腾讯企业邮、Gmail、iCloud、Outlook、阿里、Yahoo 及任意 IMAP 邮箱；可批量添加 |
 | 🧭 **小白也能添加邮箱** | 选择邮箱品牌 → 跟着图文步骤开启 IMAP → 粘贴授权码，出错时用大白话告诉你怎么办 |
-| 🔐 **Outlook 微软账号登录** | OAuth 授权，不需要授权码，MailMind 看不到你的密码 |
+| 🔐 **Outlook 也能用** | 三种方式任选：通过 Mac 自带「邮件」App 读取（推荐，无需任何注册）、自动转发到已接入的邮箱、微软账号 OAuth 直连 |
+| 📥 **读取 Mac 邮件 App** | 「邮件」App 中的 Outlook、Exchange 等账户可直接接入，MailMind 接触不到你的密码 |
 | ⚡ **实时推送** | 支持 IMAP IDLE 的邮箱新邮件秒级到达；其他邮箱每 5 分钟检查；Mac 唤醒后立即补拉 |
 | 🤖 **AI 理解每封邮件** | 8 种分类、重要程度、一句话总结、待办事项、截止日期、验证码提取、全文翻译 |
 | 🔔 **克制的通知** | 响铃 / 静默 / 不通知三档；夜间勿扰、VIP、静音发件人；一次来多封自动合并 |
@@ -105,6 +106,7 @@ MailMind 由 AI 判断每封邮件的紧急程度，再结合你的设置决定�
 ## 隐私与安全
 
 - **只读**：MailMind 不会删除、移动或修改服务器上的任何邮件，也不会把邮件标为已读
+- **读取「邮件」App 需要授权**：只有选择「通过 Mac 邮件 App」接入时，才需要在系统设置中给 MailMind「完全磁盘访问权限」；MailMind 只读取你选择接入的账户的收件箱
 - **密码保存在钥匙串**：邮箱密码、授权码、API Key、OAuth 令牌都保存在 macOS 钥匙串中
 - **防追踪**：HTML 邮件禁用 JavaScript，默认屏蔽远程图片（追踪像素）
 - **AI 数据流向**：使用云端 AI 时，邮件的发件人、主题和正文（截断至 8000 字）会发送到你选择的 AI 服务。介意的话可以使用 [Ollama](https://ollama.com) 在本机运行模型，数据不离开你的电脑
@@ -139,7 +141,7 @@ swift run MailMind --snapshot ~/Desktop/shots  # 离屏渲染界面截图
 swift scripts/make-icon.swift build/icon     # 重新生成 Logo 和图标
 ```
 
-Outlook 登录需要在微软注册应用，见 [docs/microsoft-oauth.md](docs/microsoft-oauth.md)。
+Outlook 的「微软账号直连」需要在微软注册应用，见 [docs/microsoft-oauth.md](docs/microsoft-oauth.md)；不想注册可以用「通过 Mac 邮件 App」或「转发」方式。
 
 ## 路线图
 
@@ -147,7 +149,7 @@ Outlook 登录需要在微软注册应用，见 [docs/microsoft-oauth.md](docs/m
 - [x] AI 分类、一句话总结、翻译、智能通知
 - [x] 问 AI、AI 起草回复、定期汇总
 - [x] 引导式添加邮箱、批量导入
-- [x] Outlook 微软账号登录
+- [x] Outlook：Mac 邮件 App 读取 / 转发 / 微软账号 OAuth
 - [ ] 一键退订（List-Unsubscribe）
 - [ ] 垃圾邮件移入服务器垃圾箱、已读状态同步回服务器
 - [ ] 多文件夹同步

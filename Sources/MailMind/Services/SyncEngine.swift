@@ -77,6 +77,34 @@ enum SyncEngine {
         return m
     }
 
+    /// 从「邮件」App 的本地文件同步。sync_state 的 last_uid 记录已读取到的最新修改时间（秒）。
+    static func syncAppleMail(account: MailAccount, initialDays: Int, maxMessages: Int, db: Database) throws -> Int {
+        guard let path = account.appleMailInbox else { return 0 }
+        let inbox = URL(fileURLWithPath: path, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: inbox.path) else { throw AppleMailReader.ReadError.inboxMissing(path) }
+        // 没有「完全磁盘访问权限」时目录存在但无法列出内容
+        guard (try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) != nil else { throw AppleMailReader.ReadError.accessDenied }
+
+        let folder = "applemail"
+        let state = try db.syncState(accountID: account.id, folder: folder)
+        // 留 2 分钟余量，避免和「邮件」App 同时写入时漏掉；重复的会被 INSERT OR IGNORE 忽略
+        let since = state.map { Date(timeIntervalSince1970: TimeInterval($0.lastUID) - 120) }
+            ?? Calendar.current.date(byAdding: .day, value: -max(1, initialDays), to: Date())!
+        var files = AppleMailReader.messageFiles(in: inbox, modifiedAfter: since)
+        if files.count > maxMessages { files = Array(files.suffix(maxMessages)) }
+
+        var latest = state?.lastUID ?? UInt32(since.timeIntervalSince1970)
+        for f in files {
+            guard let data = try? Data(contentsOf: f.url, options: .mappedIfSafe) else { continue }
+            let (raw, isRead) = AppleMailReader.parseEMLX(data)
+            let fetched = IMAPFetchedMessage(uid: f.number, flags: isRead ? ["\\Seen"] : [], internalDate: f.modified, raw: raw)
+            try db.insert(makeMessage(fetched, account: account, folder: folder, uidValidity: 0))
+            latest = max(latest, UInt32(clamping: Int(f.modified.timeIntervalSince1970)))
+        }
+        try db.setSyncState(accountID: account.id, folder: folder, uidValidity: 0, lastUID: latest)
+        return files.count
+    }
+
     /// 测试账户能否连接，返回收件箱邮件数。
     static func test(account: MailAccount, password: String) async throws -> Int {
         try await test(account: account, credential: .password(password))

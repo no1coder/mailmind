@@ -227,6 +227,8 @@ final class Database: @unchecked Sendable {
         case actionNeeded
         case category(String)
         case account(UUID)
+        /// 原收件人包含该地址（用于转发来源）
+        case recipient(String)
     }
 
     func messages(filter: Filter, search: String = "", limit: Int = 500) throws -> [MailMessage] {
@@ -255,6 +257,9 @@ final class Database: @unchecked Sendable {
         case .account(let id):
             conditions.append("account_id = ?")
             args.append(.text(id.uuidString))
+        case .recipient(let address):
+            conditions.append("lower(to_text) LIKE ?")
+            args.append(.text("%\(address.lowercased())%"))
         }
         let q = search.trimmed
         if !q.isEmpty {

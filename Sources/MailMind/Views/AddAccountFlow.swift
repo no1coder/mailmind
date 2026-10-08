@@ -76,7 +76,7 @@ private struct ProviderPicker: View {
                         VStack(spacing: 8) {
                             p.icon(size: 44)
                             Text(p.name).font(.callout.weight(.medium))
-                            Text(p.supported ? (p.domains.first.map { "@\($0)" } ?? (p.isCustom ? "公司或其他邮箱" : "企业邮箱")) : "暂不支持")
+                            Text(p.appleMail ? "Exchange 等" : p.supported ? (p.domains.first.map { "@\($0)" } ?? (p.isCustom ? "公司或其他邮箱" : "企业邮箱")) : "暂不支持")
                                 .font(.caption2)
                                 .foregroundStyle(p.supported ? Color.secondary : Color.orange)
                         }
@@ -121,17 +121,26 @@ private struct LoginStage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             BackButton(action: onBack)
-            HStack(alignment: .top, spacing: 24) {
-                guide
-                    .frame(width: 290)
-                Group {
-                    if provider.oauth != nil {
-                        OAuthPanel(provider: provider, onSuccess: onSuccess)
-                    } else {
-                        form
+            if provider.oauth != nil {
+                OutlookMethodsView(provider: provider, onSuccess: onSuccess)
+            } else if provider.appleMail {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 12) {
+                        provider.icon(size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("从 Mac 邮件 App 接入").font(.title2.bold())
+                            Text("适合 Outlook、公司 Exchange 等需要授权登录的邮箱").font(.callout).foregroundStyle(.secondary)
+                        }
                     }
+                    AppleMailPanel(accountKind: "邮箱", onSuccess: onSuccess)
                 }
-                .frame(maxWidth: .infinity)
+            } else {
+                HStack(alignment: .top, spacing: 24) {
+                    guide
+                        .frame(width: 290)
+                    form
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
         .onAppear {
@@ -313,7 +322,7 @@ private struct LoginStage: View {
 
 // MARK: - OAuth 登录（Outlook）
 
-private struct OAuthPanel: View {
+struct OAuthPanel: View {
     @Environment(AppState.self) private var state
     let provider: MailProviderPreset
     var onSuccess: (MailAccount, Int) -> Void

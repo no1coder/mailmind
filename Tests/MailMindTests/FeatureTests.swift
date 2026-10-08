@@ -260,3 +260,96 @@ final class OAuthTests: XCTestCase {
         }
     }
 }
+
+/// 用临时目录模拟「邮件」App 的数据结构（不读取任何真实邮件）。
+final class AppleMailTests: XCTestCase {
+    private var home: URL!
+    private var inbox: URL!
+
+    override func setUpWithError() throws {
+        home = FileManager.default.temporaryDirectory.appendingPathComponent("mailmind-applemail-\(UUID().uuidString)")
+        let account = home.appendingPathComponent("Library/Mail/V10/0A1B2C3D-0000-4000-8000-00000000AAAA")
+        inbox = account.appendingPathComponent("Inbox.mbox")
+        try FileManager.default.createDirectory(at: inbox.appendingPathComponent("1F2E3D4C/Data/2/1/Messages"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/Mail/V9"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: account.appendingPathComponent("Sent Messages.mbox"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/Mail/V10/MailData"), withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: home)
+    }
+
+    private func emlx(subject: String, read: Bool, to: String = "me@outlook.com") -> Data {
+        let raw = Data("From: Boss <boss@corp.com>\r\nTo: \(to)\r\nSubject: \(subject)\r\nDate: Wed, 8 Oct 2026 10:00:00 +0800\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n你好，正文。\r\n".utf8)
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>flags</key><integer>\(read ? 8590195713 : 8590195712)</integer></dict></plist>
+        """
+        var d = Data("\(raw.count)        \n".utf8)
+        d.append(raw)
+        d.append(Data(plist.utf8))
+        return d
+    }
+
+    private func write(_ name: String, _ data: Data) throws {
+        try data.write(to: inbox.appendingPathComponent("1F2E3D4C/Data/2/1/Messages/\(name)"))
+    }
+
+    func testParseEMLX() {
+        let (raw, read) = AppleMailReader.parseEMLX(emlx(subject: "Hi", read: true))
+        XCTAssertEqual(MIMEParser.parse(raw).subject, "Hi")
+        XCTAssertTrue(read)
+        XCTAssertFalse(AppleMailReader.parseEMLX(emlx(subject: "Hi", read: false)).isRead)
+    }
+
+    func testDiscoverAccountsAndDedupePartial() throws {
+        try write("101.emlx", emlx(subject: "A", read: true))
+        try write("102.partial.emlx", emlx(subject: "B", read: false))
+        try write("103.partial.emlx", emlx(subject: "C-partial", read: false))
+        try write("103.emlx", emlx(subject: "C-full", read: false))
+
+        guard case .granted(let root) = AppleMailReader.access(home: home) else { return XCTFail("应能访问") }
+        XCTAssertEqual(root.lastPathComponent, "V10", "应选择最新版本目录")
+
+        let accounts = AppleMailReader.accounts(root: root)
+        XCTAssertEqual(accounts.count, 1)
+        XCTAssertEqual(accounts.first?.email, "me@outlook.com")
+        XCTAssertEqual(accounts.first?.messageCount, 3)
+
+        let files = AppleMailReader.messageFiles(in: inbox)
+        let c = try XCTUnwrap(files.first { $0.number == 103 })
+        XCTAssertFalse(c.url.lastPathComponent.contains("partial"), "同一封邮件应优先使用完整版")
+    }
+
+    func testAccessNotFound() {
+        XCTAssertEqual(AppleMailReader.access(home: home.appendingPathComponent("nope")), .notFound)
+    }
+
+    func testIncrementalSyncIntoDatabase() throws {
+        try write("201.emlx", emlx(subject: "第一封", read: true))
+        let db = try Database(path: ":memory:")
+        let account = MailAccount(displayName: "o", email: "me@outlook.com", username: "", host: "applemail", appleMailInbox: inbox.path)
+
+        XCTAssertEqual(try SyncEngine.syncAppleMail(account: account, initialDays: 3, maxMessages: 100, db: db), 1)
+        var list = try db.messages(filter: .account(account.id))
+        XCTAssertEqual(list.map(\.subject), ["第一封"])
+        XCTAssertTrue(list[0].isRead)
+
+        // 新邮件到达：再次同步只会新增它（旧的即使重读也会被忽略）
+        try write("202.emlx", emlx(subject: "第二封", read: false))
+        _ = try SyncEngine.syncAppleMail(account: account, initialDays: 3, maxMessages: 100, db: db)
+        list = try db.messages(filter: .account(account.id))
+        XCTAssertEqual(Set(list.map(\.subject)), ["第一封", "第二封"])
+    }
+
+    func testForwardAliasFilter() throws {
+        let db = try Database(path: ":memory:")
+        var m = MailMessage(id: "x", accountID: UUID(), folder: "INBOX", uid: 1)
+        m.to = "Me <Me@Outlook.com>"
+        try db.insert(m)
+        XCTAssertEqual(try db.messages(filter: .recipient("me@outlook.com")).count, 1)
+        XCTAssertEqual(try db.messages(filter: .recipient("other@outlook.com")).count, 0)
+    }
+}

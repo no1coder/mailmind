@@ -150,7 +150,7 @@ private struct AccountSettingsRow: View {
                 .lineLimit(2)
         } else {
             HStack(spacing: 4) {
-                Circle().fill(status?.realtime == true ? Color.green : Color.blue).frame(width: 6, height: 6)
+                Circle().fill(status?.realtime == true || account.isAppleMail ? Color.green : Color.blue).frame(width: 6, height: 6)
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -170,7 +170,7 @@ private struct AccountSettingsRow: View {
     private var statusText: String {
         var parts: [String] = []
         if status?.syncing == true { parts.append("同步中…") }
-        parts.append(status?.realtime == true ? "实时推送" : "定时检查")
+        parts.append(account.isAppleMail ? "从「邮件」App 读取" : (status?.realtime == true ? "实时推送" : "定时检查"))
         if let t = status?.lastSync { parts.append("\(t.formatted(date: .omitted, time: .shortened)) 已同步") }
         return parts.joined(separator: " · ")
     }

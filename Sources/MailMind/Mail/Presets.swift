@@ -31,9 +31,11 @@ struct MailProviderPreset: Identifiable, Hashable {
     var note = ""
     /// 使用 OAuth 登录的服务商标识（例如 "microsoft"）
     var oauth: String? = nil
+    /// 通过 Mac 自带「邮件」App 的本地数据接入
+    var appleMail = false
 
     var color: Color { Color(hex: colorHex) }
-    var isCustom: Bool { host.isEmpty }
+    var isCustom: Bool { host.isEmpty && !appleMail }
 }
 
 enum MailProviderPresets {
@@ -141,6 +143,10 @@ enum MailProviderPresets {
                   "找到「生成应用密码」，名字填 MailMind",
                   "复制生成的密码，粘贴到右边",
               ]),
+        .init(name: "Mac 邮件 App", host: "",
+              hint: "读取 macOS「邮件」App 已收取的邮件。",
+              symbol: "envelope.open.fill", colorHex: 0x1A8CFF,
+              passwordLabel: "密码", appleMail: true),
         .init(name: "其他邮箱", host: "",
               hint: "填写邮箱服务商提供的 IMAP 服务器地址，通常端口为 993（SSL）。",
               symbol: "envelope.fill", colorHex: 0x8E8E93,

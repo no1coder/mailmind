@@ -14,6 +14,18 @@ struct MailAccount: Identifiable, Codable, Hashable {
     var folders: [String] = ["INBOX"]
     /// OAuth 登录的服务商（例如 "microsoft"）；为 nil 表示用密码 / 授权码登录。
     var oauthProvider: String?
+    /// 从「邮件」App 本地读取时，收件箱目录的路径；为 nil 表示通过 IMAP 连接。
+    var appleMailInbox: String?
+
+    var isAppleMail: Bool { appleMailInbox != nil }
+}
+
+/// 转发来源：例如 Outlook 邮件自动转发到某个已接入的邮箱，
+/// 按原收件人地址把这些邮件单独归为一个视图。
+struct ForwardAlias: Identifiable, Codable, Hashable {
+    var address: String
+    var name: String
+    var id: String { address.lowercased() }
 }
 
 /// AI 给出的邮件分类。rawValue 直接用中文，便于提示词和数据库共用。

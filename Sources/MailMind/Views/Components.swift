@@ -34,7 +34,8 @@ extension MailProviderPreset {
 
     /// 根据账户的服务器地址或邮箱后缀找到对应服务商。
     static func forAccount(_ a: MailAccount) -> MailProviderPreset? {
-        MailProviderPresets.all.first { !$0.host.isEmpty && $0.host == a.host } ?? MailProviderPresets.guess(email: a.email)
+        if a.isAppleMail { return MailProviderPresets.guess(email: a.email) ?? MailProviderPresets.all.first { $0.appleMail } }
+        return MailProviderPresets.all.first { !$0.host.isEmpty && $0.host == a.host } ?? MailProviderPresets.guess(email: a.email)
     }
 }
 
