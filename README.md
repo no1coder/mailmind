@@ -66,7 +66,7 @@ MailMind 让 AI 替你把关：
 需要 **macOS 14 Sonoma** 或更高版本，以及 **Xcode 15+**。
 
 ```bash
-git clone https://github.com/<你的用户名>/mailmind.git
+git clone https://github.com/no1coder/mailmind.git
 cd mailmind
 make run        # 编译并启动
 make install    # 安装到「应用程序」文件夹
