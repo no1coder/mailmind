@@ -18,6 +18,18 @@ final class AppSettings {
     var forwardAliases: [ForwardAlias] {
         didSet { defaults.set(try? JSONEncoder().encode(forwardAliases), forKey: "forwardAliases") }
     }
+    /// 分类 / 提醒规则
+    var mailRules: [MailRule] {
+        didSet { defaults.set(try? JSONEncoder().encode(mailRules), forKey: "mailRules") }
+    }
+    /// 重要邮件转发渠道（Telegram、微信等）；令牌在钥匙串中
+    var forwardChannels: [ForwardChannel] {
+        didSet { defaults.set(try? JSONEncoder().encode(forwardChannels), forKey: "forwardChannels") }
+    }
+    /// 是否已把旧版「发件人规则」迁移为 mailRules
+    var senderRulesMigrated: Bool { didSet { defaults.set(senderRulesMigrated, forKey: "senderRulesMigrated") } }
+    /// 是否把手动纠正的分类作为示例交给 AI 学习
+    var learnFromCorrections: Bool { didSet { defaults.set(learnFromCorrections, forKey: "learnFromCorrections") } }
 
     // AI
     var aiEnabled: Bool { didSet { defaults.set(aiEnabled, forKey: "aiEnabled") } }
@@ -70,9 +82,15 @@ final class AppSettings {
             "digestFrequency": DigestFrequency.daily.rawValue,
             "digestHour": 20,
             "digestMinute": 0,
+            "senderRulesMigrated": false,
+            "learnFromCorrections": true,
         ])
         accounts = (d.data(forKey: "accounts")).flatMap { try? JSONDecoder().decode([MailAccount].self, from: $0) } ?? []
         forwardAliases = (d.data(forKey: "forwardAliases")).flatMap { try? JSONDecoder().decode([ForwardAlias].self, from: $0) } ?? []
+        mailRules = (d.data(forKey: "mailRules")).flatMap { try? JSONDecoder().decode([MailRule].self, from: $0) } ?? []
+        forwardChannels = (d.data(forKey: "forwardChannels")).flatMap { try? JSONDecoder().decode([ForwardChannel].self, from: $0) } ?? []
+        senderRulesMigrated = d.bool(forKey: "senderRulesMigrated")
+        learnFromCorrections = d.bool(forKey: "learnFromCorrections")
         aiEnabled = d.bool(forKey: "aiEnabled")
         aiBaseURL = d.string(forKey: "aiBaseURL") ?? ""
         aiModel = d.string(forKey: "aiModel") ?? ""

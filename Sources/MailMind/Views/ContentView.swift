@@ -49,6 +49,24 @@ struct ContentView: View {
             AskAIView()
                 .environment(state)
         }
+        .sheet(item: $state.markRequest) { req in
+            MarkSheet(request: req)
+                .environment(state)
+        }
+        .sheet(isPresented: $state.showCleanup) {
+            CleanupView()
+                .environment(state)
+        }
+        .confirmationDialog(deleteTitle, isPresented: Binding(get: { state.deleteRequest != nil },
+                                                              set: { if !$0 { state.deleteRequest = nil } })) {
+            Button("删除", role: .destructive) {
+                let ids = state.deleteRequest ?? []
+                state.deleteRequest = nil
+                Task { await state.deleteMessages(ids) }
+            }
+        } message: {
+            Text("邮件会移到邮箱的「已删除」文件夹，可以在邮箱网页版找回。")
+        }
         .sheet(isPresented: $state.showOnboarding) {
             OnboardingView()
                 .environment(state)
@@ -57,6 +75,11 @@ struct ContentView: View {
         .onAppear {
             state.openMainWindow = { openWindow(id: "main") }
         }
+    }
+
+    private var deleteTitle: String {
+        let n = state.deleteRequest?.count ?? 0
+        return n > 1 ? "删除 \(n) 封邮件？" : "删除这封邮件？"
     }
 
     @ViewBuilder
@@ -86,7 +109,7 @@ private struct StatusIndicator: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if state.isSyncing || state.isGeneratingDigest {
+            if state.isSyncing || state.isGeneratingDigest || state.isDeleting {
                 ProgressView().controlSize(.small)
             }
             if !state.lastErrors.isEmpty {
@@ -142,12 +165,25 @@ struct BulkActionView: View {
                 Button("标为已读") { state.setRead(ids, read: true) }
                 Button("标为未读") { state.setRead(ids, read: false) }
             }
-            Menu("修改分类") {
-                ForEach(MailCategory.allCases) { c in
-                    Button(c.rawValue) { state.setCategory(ids, c) }
+            HStack {
+                Button {
+                    state.markRequest = MarkRequest(ids: ids, category: .spam)
+                } label: {
+                    Label("标记为垃圾", systemImage: "xmark.bin")
                 }
+                Menu("标记为…") {
+                    ForEach(MailCategory.allCases) { c in
+                        Button(c.rawValue) { state.markRequest = MarkRequest(ids: ids, category: c) }
+                    }
+                }
+                .fixedSize()
             }
-            .fixedSize()
+            Button(role: .destructive) {
+                state.deleteRequest = ids
+            } label: {
+                Label("删除 \(ids.count) 封", systemImage: "trash")
+            }
+            .tint(.red)
             Button("取消选择") { state.selectedIDs = [] }
                 .buttonStyle(.link)
         }

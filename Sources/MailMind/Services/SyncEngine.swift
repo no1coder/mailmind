@@ -105,6 +105,28 @@ enum SyncEngine {
         return files.count
     }
 
+    /// 把邮件移到服务器上的「已删除」文件夹，返回处理的数量。
+    static func moveToTrash(account: MailAccount, credential: IMAPCredential, targets: [Database.DeletionTarget]) async throws -> Int {
+        guard !targets.isEmpty else { return 0 }
+        let client = IMAPClient(host: account.host, port: account.port, useTLS: account.useTLS)
+        do {
+            try await client.connect(username: account.username, credential: credential)
+            let caps = (try? await client.capabilities()) ?? []
+            let trash = IMAPClient.trashFolder(in: (try? await client.listFolders()) ?? [])
+            var done = 0
+            for items in Dictionary(grouping: targets, by: { "\($0.folder)\u{0}\($0.uidValidity)" }).values {
+                guard let first = items.first else { continue }
+                done += try await client.moveToTrash(folder: first.folder, uidValidity: first.uidValidity,
+                                                     uids: items.map(\.uid), trash: trash, capabilities: caps)
+            }
+            await client.logout()
+            return done
+        } catch {
+            await client.logout()
+            throw error
+        }
+    }
+
     /// 测试账户能否连接，返回收件箱邮件数。
     static func test(account: MailAccount, password: String) async throws -> Int {
         try await test(account: account, credential: .password(password))

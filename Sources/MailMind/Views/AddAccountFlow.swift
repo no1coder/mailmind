@@ -86,7 +86,7 @@ private struct ProviderPicker: View {
             Spacer(minLength: 0)
             HStack {
                 Image(systemName: "lock.shield").foregroundStyle(.secondary)
-                Text("MailMind 只读取邮件，不会删除或修改任何内容；密码保存在系统钥匙串中。")
+                Text("MailMind 不会改动你的邮件，只有你点「删除」时才会移到已删除；密码保存在系统钥匙串中。")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("邮箱很多？批量添加", action: onBatch)
@@ -253,7 +253,7 @@ private struct LoginStage: View {
             }
 
             if error == nil {
-                Label("只读取邮件，不会删除或修改；\(provider.passwordLabel)只保存在这台 Mac 的钥匙串中。", systemImage: "lock.shield")
+                Label("不会改动你的邮件；\(provider.passwordLabel)只保存在这台 Mac 的钥匙串中。", systemImage: "lock.shield")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

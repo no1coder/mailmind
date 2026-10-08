@@ -28,6 +28,15 @@ struct MailMindApp: App {
                     .disabled(state.selectedIDs.isEmpty)
                 Button("全部标为已读") { state.markAllReadInCurrentView() }
                     .keyboardShortcut("a", modifiers: [.command, .option])
+                Button("标记为垃圾邮件…") {
+                    state.markRequest = MarkRequest(ids: Array(state.selectedIDs), category: .spam)
+                }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+                .disabled(state.selectedIDs.isEmpty)
+                Button("删除…") { state.deleteRequest = Array(state.selectedIDs) }
+                    .keyboardShortcut(.delete)
+                    .disabled(state.selectedIDs.isEmpty)
+                Button("清理垃圾邮件…") { state.showCleanup = true }
                 Divider()
                 Button("重要") { state.filter = .important }.keyboardShortcut("1")
                 Button("待处理") { state.filter = .action }.keyboardShortcut("2")

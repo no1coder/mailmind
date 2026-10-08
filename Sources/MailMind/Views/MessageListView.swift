@@ -11,7 +11,7 @@ struct MessageListView: View {
                     ForEach(section.messages) { m in
                         MessageRow(message: m,
                                    accountName: state.settings.accounts.count > 1 ? state.account(id: m.accountID)?.displayName : nil,
-                                   isVIP: state.senderRules[m.senderKey]?.vip == true)
+                                   isVIP: state.rule(for: m)?.notify == .always)
                             .tag(m.id)
                             .contextMenu { contextMenu(for: m) }
                     }
@@ -32,6 +32,14 @@ struct MessageListView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    state.showCleanup = true
+                } label: {
+                    Label("清理", systemImage: "trash.circle")
+                }
+                .help("批量删除 AI 识别出的垃圾、营销邮件")
+            }
+            ToolbarItem {
+                Button {
                     state.markAllReadInCurrentView()
                 } label: {
                     Label("全部标为已读", systemImage: "envelope.open")
@@ -46,15 +54,10 @@ struct MessageListView: View {
     private func contextMenu(for m: MailMessage) -> some View {
         let ids = state.selectedIDs.contains(m.id) ? Array(state.selectedIDs) : [m.id]
         Button(m.isRead ? "标为未读" : "标为已读") { state.setRead(ids, read: !m.isRead) }
-        Menu("修改分类") {
-            ForEach(MailCategory.allCases) { c in
-                Button(c.rawValue) { state.setCategory(ids, c) }
-            }
-        }
-        Divider()
-        SenderMenuItems(message: m)
         Divider()
         Button("重新 AI 分析") { state.reanalyze(m.id) }
+        Divider()
+        MarkMenuItems(ids: ids, message: m)
     }
 
     private var emptyTitle: String {
@@ -103,35 +106,6 @@ struct MessageListView: View {
             }
         }
         return sections
-    }
-}
-
-/// 发件人相关的快捷操作：VIP、静音、固定分类。
-struct SenderMenuItems: View {
-    @Environment(AppState.self) private var state
-    let message: MailMessage
-
-    var body: some View {
-        let rule = state.senderRule(for: message.fromEmail)
-        Button(rule.vip ? "取消 VIP" : "设为 VIP（总是提醒）") {
-            state.updateSenderRule(message.fromEmail) { $0.vip.toggle(); if $0.vip { $0.muted = false } }
-        }
-        Button(rule.muted ? "取消静音" : "静音此发件人（不再提醒）") {
-            state.updateSenderRule(message.fromEmail) { $0.muted.toggle(); if $0.muted { $0.vip = false } }
-        }
-        Menu("以后来自 \(message.fromEmail) 的邮件都归为") {
-            ForEach(MailCategory.allCases) { c in
-                Button {
-                    state.setSenderCategory(message.fromEmail, c)
-                } label: {
-                    if rule.category == c.rawValue { Label(c.rawValue, systemImage: "checkmark") } else { Text(c.rawValue) }
-                }
-            }
-            if !rule.category.isEmpty {
-                Divider()
-                Button("交给 AI 判断") { state.setSenderCategory(message.fromEmail, nil) }
-            }
-        }
     }
 }
 

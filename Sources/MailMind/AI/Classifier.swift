@@ -4,6 +4,8 @@ struct AnalysisOptions: Sendable {
     var translate: Bool
     var targetLanguage: String
     var customRules: String
+    /// 用户手动纠正过的分类（每行一条），让 AI 照此处理相似邮件
+    var examples: [String] = []
 }
 
 enum NotifyLevel: String {
@@ -22,6 +24,21 @@ struct AIAnalysis: Equatable {
     var notify: NotifyLevel = .none
     var deadline = ""
     var code = ""
+
+    /// 按规则覆盖分类，同时调整重要性与提醒级别。
+    mutating func apply(category c: MailCategory) {
+        category = c.rawValue
+        switch c {
+        case .important:
+            importance = .high
+            if notify == .none { notify = .normal }
+        case .spam, .marketing:
+            importance = .low
+            notify = .none
+        default:
+            break
+        }
+    }
 }
 
 enum Classifier {
@@ -64,6 +81,10 @@ enum Classifier {
         let rules = o.customRules.trimmed
         if !rules.isEmpty {
             prompt += "\n\n用户自定义规则（优先级最高，与上面冲突时以此为准）：\n\(rules)"
+        }
+        if !o.examples.isEmpty {
+            prompt += "\n\n用户手动纠正过以下邮件的分类。遇到相似的邮件（同一发件人或同一域名、相似的主题或内容）时，按用户的分类处理；如果是验证码邮件，仍然要提取 code：\n"
+                + o.examples.map { "- \($0)" }.joined(separator: "\n")
         }
         return prompt
     }
@@ -127,7 +148,7 @@ enum Classifier {
         )
     }
 
-    /// 发件人规则命中「低价值」分类时，不调用 AI，直接本地归类以节省费用。
+    /// 规则命中「低价值」分类时，不调用 AI，直接本地归类以节省费用。
     static func localAnalysis(for m: MailMessage, category: MailCategory) -> AIAnalysis {
         AIAnalysis(
             category: category.rawValue,
@@ -136,7 +157,7 @@ enum Classifier {
             summary: String(m.snippet.prefix(80)),
             translation: "",
             action: "",
-            reason: "按发件人规则自动归类为「\(category.rawValue)」",
+            reason: "按你设置的规则自动归类为「\(category.rawValue)」",
             headline: "\(m.sender)：\(m.subject)",
             notify: category == .important ? .normal : .none
         )

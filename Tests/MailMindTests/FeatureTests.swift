@@ -32,7 +32,7 @@ final class NotificationPolicyTests: XCTestCase {
         XCTAssertEqual(p.decide(mail(.urgent, read: true), now: now), .none, "其他设备已读")
         XCTAssertEqual(p.decide(mail(.urgent, age: 2 * 86_400), now: now), .none, "旧邮件")
         XCTAssertEqual(p.decide(mail(.urgent, category: .spam), now: now), .none)
-        p.mutedSenders = ["boss@corp.com"]
+        p.rules = [MailRule(sender: "boss@corp.com", notify: .never)]
         XCTAssertEqual(p.decide(mail(.urgent, from: "Boss@Corp.com"), now: now), .none, "静音（大小写不敏感）")
         p.enabled = false
         XCTAssertEqual(p.decide(mail(.urgent, from: "x@y.com"), now: now), .none)
@@ -43,8 +43,18 @@ final class NotificationPolicyTests: XCTestCase {
         XCTAssertEqual(p.decide(mail(.urgent, relativeTo: night), now: night), .silent)
         XCTAssertEqual(p.decide(mail(.none, code: "123456", relativeTo: night), now: night), .alert)
         XCTAssertEqual(p.decide(mail(.none, code: "123456", age: 3600, relativeTo: night), now: night), .none, "过期验证码")
-        p.vipSenders = ["boss@corp.com"]
+        p.rules = [MailRule(sender: "boss@corp.com", notify: .always)]
         XCTAssertEqual(p.decide(mail(.none, relativeTo: night), now: night), .alert)
+    }
+
+    /// 不想看某个发件人的其他邮件，但验证码还要收
+    func testMutedSenderStillDeliversCodes() {
+        var p = NotificationPolicy()
+        p.rules = [MailRule(sender: "@shop.com", notify: .never, exceptCodes: true)]
+        XCTAssertEqual(p.decide(mail(.normal, from: "promo@shop.com"), now: now), .none)
+        XCTAssertEqual(p.decide(mail(.none, from: "noreply@login.shop.com", code: "8812"), now: now), .alert, "子域名的验证码仍提醒")
+        p.rules[0].exceptCodes = false
+        XCTAssertEqual(p.decide(mail(.none, from: "noreply@shop.com", code: "8812"), now: now), .none)
     }
 
     func testQuietHoursWindow() {
@@ -351,5 +361,251 @@ final class AppleMailTests: XCTestCase {
         try db.insert(m)
         XCTAssertEqual(try db.messages(filter: .recipient("me@outlook.com")).count, 1)
         XCTAssertEqual(try db.messages(filter: .recipient("other@outlook.com")).count, 0)
+    }
+}
+
+
+final class MailRuleTests: XCTestCase {
+    private let qq = UUID(), work = UUID()
+
+    private func mail(from: String, subject: String = "", account: UUID? = nil, code: String = "") -> MailMessage {
+        var m = MailMessage(id: UUID().uuidString, accountID: account ?? qq, folder: "INBOX", uid: 1)
+        m.fromEmail = from
+        m.subject = subject
+        m.code = code
+        return m
+    }
+
+    func testMatching() {
+        let exact = MailRule(sender: "News@Shop.com", category: "营销")
+        XCTAssertTrue(exact.matches(mail(from: "news@shop.com")))
+        XCTAssertFalse(exact.matches(mail(from: "other@shop.com")))
+
+        let domain = MailRule(sender: "@shop.com", category: "垃圾")
+        XCTAssertTrue(domain.matches(mail(from: "a@shop.com")))
+        XCTAssertTrue(domain.matches(mail(from: "a@mail.shop.com")))
+        XCTAssertFalse(domain.matches(mail(from: "a@myshop.com")), "不能误匹配相似域名")
+
+        let keyword = MailRule(sender: "@shop.com", keywords: "促销，优惠券", category: "垃圾")
+        XCTAssertTrue(keyword.matches(mail(from: "a@shop.com", subject: "双十一优惠券来了")))
+        XCTAssertFalse(keyword.matches(mail(from: "a@shop.com", subject: "订单已发货")))
+        XCTAssertTrue(keyword.matches(mail(from: "a@shop.com", subject: "通知"), text: "限时促销"))
+
+        let scoped = MailRule(accountID: work, sender: "@shop.com", category: "垃圾")
+        XCTAssertFalse(scoped.matches(mail(from: "a@shop.com", account: qq)), "只对指定邮箱生效")
+        XCTAssertTrue(scoped.matches(mail(from: "a@shop.com", account: work)))
+
+        var disabled = exact
+        disabled.enabled = false
+        XCTAssertFalse(disabled.matches(mail(from: "news@shop.com")))
+        XCTAssertFalse(MailRule(category: "垃圾").isValid, "没有条件的规则无效")
+        XCTAssertFalse(MailRule(sender: "a@b.com").isValid, "没有动作的规则无效")
+    }
+
+    func testMostSpecificRuleWins() {
+        let older = Date(timeIntervalSince1970: 0)
+        let rules = [
+            MailRule(sender: "@shop.com", category: "垃圾", createdAt: older),
+            MailRule(sender: "orders@shop.com", category: "通知", createdAt: older),
+            MailRule(accountID: work, sender: "@shop.com", category: "工作", createdAt: older),
+        ]
+        XCTAssertEqual(MailRule.firstMatch(rules, for: mail(from: "promo@shop.com"))?.category, "垃圾")
+        XCTAssertEqual(MailRule.firstMatch(rules, for: mail(from: "orders@shop.com"))?.category, "通知")
+        XCTAssertEqual(MailRule.firstMatch(rules, for: mail(from: "orders@shop.com", account: work))?.category, "工作")
+    }
+
+    func testApplyCategoryAdjustsImportance() {
+        var a = AIAnalysis(category: "工作", importance: .high, language: "zh", summary: "", translation: "", action: "", reason: "",
+                           notify: .urgent)
+        a.apply(category: .spam)
+        XCTAssertEqual(a.importance, .low)
+        XCTAssertEqual(a.notify, .none)
+        a.apply(category: .important)
+        XCTAssertEqual(a.importance, .high)
+        XCTAssertEqual(a.notify, .normal)
+    }
+
+    func testExamplesInPrompt() throws {
+        var o = AnalysisOptions(translate: false, targetLanguage: "简体中文", customRules: "")
+        XCTAssertFalse(Classifier.systemPrompt(o).contains("手动纠正"))
+        let db = try Database(path: ":memory:")
+        try db.addExample(accountID: nil, fromEmail: "Promo@Shop.com", subject: "会员日", category: "垃圾")
+        try db.addExample(accountID: nil, fromEmail: "promo@shop.com", subject: "会员日", category: "营销")
+        let examples = try db.examples()
+        XCTAssertEqual(examples.count, 1, "同一发件人 + 主题只保留最新一条")
+        XCTAssertEqual(examples[0].category, "营销")
+        o.examples = examples.map(\.promptLine)
+        let prompt = Classifier.systemPrompt(o)
+        XCTAssertTrue(prompt.contains("promo@shop.com"))
+        XCTAssertTrue(prompt.contains("→ 营销"))
+    }
+}
+
+final class DeletionTests: XCTestCase {
+    func testDeletedMessagesAreHiddenAndNotResynced() throws {
+        let db = try Database(path: ":memory:")
+        let account = UUID()
+        var m = MailMessage(id: "\(account.uuidString):INBOX:777:42", accountID: account, folder: "INBOX", uid: 42)
+        m.category = ""
+        m.bodyText = "正文"
+        try db.insert(m)
+        try db.setCategory(id: m.id, category: .spam)
+        XCTAssertEqual(try db.messages(filter: .category("垃圾")).count, 1)
+
+        let targets = try db.deletionTargets(ids: [m.id])
+        XCTAssertEqual(targets, [Database.DeletionTarget(id: m.id, accountID: account, folder: "INBOX", uid: 42, uidValidity: 777)])
+
+        try db.markDeleted(ids: [m.id])
+        XCTAssertTrue(try db.messages(filter: .category("垃圾")).isEmpty)
+        XCTAssertTrue(try db.messages(filter: .account(account)).isEmpty)
+        XCTAssertEqual(try db.body(id: m.id).text, "", "正文应被清空")
+        XCTAssertNil(try db.unreadCounts()["垃圾"])
+
+        // 再次同步到同一封邮件时不应重新出现
+        try db.insert(m)
+        XCTAssertTrue(try db.messages(filter: .account(account)).isEmpty)
+    }
+
+    func testParseListAndFindTrash() {
+        func list(_ line: String, literal: String? = nil) -> IMAPClient.FolderEntry? {
+            IMAPClient.parseList(IMAPResponse(text: line, literals: literal.map { [Data($0.utf8)] } ?? []))
+        }
+        XCTAssertEqual(list(#"* LIST (\HasNoChildren \Trash) "/" "Deleted Messages""#),
+                       IMAPClient.FolderEntry(name: "Deleted Messages", attributes: ["\\HasNoChildren", "\\Trash"]))
+        XCTAssertEqual(list(#"* LIST (\HasNoChildren) "/" INBOX"#)?.name, "INBOX")
+        XCTAssertEqual(list(#"* LIST () NIL "&XfJSIJZk-""#)?.name, "&XfJSIJZk-")
+        XCTAssertEqual(list(#"* LIST () "/" {9}"#, literal: "Junk Mail")?.name, "Junk Mail")
+        XCTAssertNil(list("* OK done"))
+
+        // 有 \Trash 标记时优先
+        XCTAssertEqual(IMAPClient.trashFolder(in: [
+            .init(name: "Trash", attributes: []),
+            .init(name: "[Gmail]/Bin", attributes: ["\\HasNoChildren", "\\Trash"]),
+        ]), "[Gmail]/Bin")
+        // 163：没有 SPECIAL-USE，按中文名（修改版 UTF-7）识别
+        XCTAssertEqual(IMAPClient.trashFolder(in: [.init(name: "INBOX", attributes: []), .init(name: "&XfJSIJZk-", attributes: [])]), "&XfJSIJZk-")
+        XCTAssertNil(IMAPClient.trashFolder(in: [.init(name: "INBOX", attributes: [])]))
+    }
+
+    func testTrashCommands() {
+        XCTAssertEqual(IMAPClient.trashCommands(uids: [9, 3], trash: "Trash", capabilities: ["MOVE"]),
+                       [#"UID MOVE 3,9 "Trash""#])
+        XCTAssertEqual(IMAPClient.trashCommands(uids: [3], trash: "Trash", capabilities: ["UIDPLUS"]),
+                       [#"UID COPY 3 "Trash""#, #"UID STORE 3 +FLAGS.SILENT (\Deleted)"#, "UID EXPUNGE 3"])
+        XCTAssertEqual(IMAPClient.trashCommands(uids: [3], trash: "Trash", capabilities: []),
+                       [#"UID COPY 3 "Trash""#, #"UID STORE 3 +FLAGS.SILENT (\Deleted)"#], "不支持 UIDPLUS 时不执行 EXPUNGE")
+        XCTAssertEqual(IMAPClient.trashCommands(uids: [3], trash: nil, capabilities: ["MOVE"]),
+                       [#"UID STORE 3 +FLAGS.SILENT (\Deleted)"#])
+    }
+}
+
+final class ForwarderTests: XCTestCase {
+    private var sample: MailMessage {
+        var m = MailMessage(id: "acc:INBOX:1:5", accountID: UUID(), folder: "INBOX", uid: 5)
+        m.fromName = "王经理"
+        m.fromEmail = "wang@corp.com"
+        m.subject = "Q4 预算"
+        m.headline = "王经理：周五前确认 Q4 预算表"
+        m.summary = "需要确认预算。"
+        m.action = "确认预算表"
+        m.deadline = "2026-10-16"
+        return m
+    }
+
+    private func json(_ r: URLRequest) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(r.httpBody)) as? [String: Any])
+    }
+
+    func testText() {
+        let t = Forwarder.text(for: sample, accountName: "工作邮箱")
+        XCTAssertTrue(t.hasPrefix("📬 王经理：周五前确认 Q4 预算表"))
+        XCTAssertTrue(t.contains("王经理 <wang@corp.com>"))
+        XCTAssertTrue(t.contains("待办：确认预算表（2026-10-16 前）"))
+        XCTAssertTrue(t.contains("工作邮箱"))
+        var code = sample
+        code.code = "482913"
+        XCTAssertTrue(Forwarder.text(for: code, accountName: nil).contains("验证码：482913"))
+    }
+
+    func testTelegramRequest() throws {
+        var c = ForwardChannel.new(.telegram)
+        XCTAssertThrowsError(try Forwarder.request(for: c, secret: "", text: "x", message: nil, idempotencyKey: "k"))
+        c.chatID = "12345"
+        let r = try Forwarder.request(for: c, secret: "123:ABC", text: "hello", message: nil, idempotencyKey: "k")
+        XCTAssertEqual(r.url?.absoluteString, "https://api.telegram.org/bot123:ABC/sendMessage")
+        XCTAssertEqual(try json(r)["chat_id"] as? String, "12345")
+        XCTAssertEqual(try json(r)["text"] as? String, "hello")
+        XCTAssertThrowsError(try Forwarder.telegramURL(token: "../x", method: "getMe"))
+    }
+
+    func testOpenClawRequest() throws {
+        var c = ForwardChannel.new(.openclaw)
+        c.to = "wxid_abc"
+        let r = try Forwarder.request(for: c, secret: "tok", text: "hello", message: nil, idempotencyKey: "acc:INBOX:1:5")
+        XCTAssertEqual(r.url?.absoluteString, "http://127.0.0.1:18789/hooks/agent")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "Idempotency-Key"), "acc:INBOX:1:5")
+        let body = try json(r)
+        XCTAssertEqual(body["channel"] as? String, "openclaw-weixin")
+        XCTAssertEqual(body["to"] as? String, "wxid_abc")
+        XCTAssertEqual(body["deliver"] as? Bool, true)
+        XCTAssertTrue((body["message"] as? String)?.contains("hello") == true)
+        XCTAssertNil(body["agentId"])
+
+        // 只填频道不填接收人：两者都不发送（OpenClaw 要求同时提供）
+        c.to = ""
+        XCTAssertNil(try json(Forwarder.request(for: c, secret: "tok", text: "x", message: nil, idempotencyKey: "k"))["channel"])
+    }
+
+    func testWebhookFormats() throws {
+        var c = ForwardChannel.new(.webhook)
+        c.url = "https://example.com/hook"
+        let generic = try json(Forwarder.request(for: c, secret: "", text: "hi", message: sample, idempotencyKey: "k"))
+        XCTAssertEqual(generic["event"] as? String, "mail.important")
+        XCTAssertEqual((generic["mail"] as? [String: Any])?["headline"] as? String, sample.headline)
+
+        c.webhookFormat = .wecom
+        XCTAssertEqual(try json(Forwarder.request(for: c, secret: "", text: "hi", message: nil, idempotencyKey: "k"))["msgtype"] as? String, "text")
+        c.webhookFormat = .feishu
+        XCTAssertEqual(try json(Forwarder.request(for: c, secret: "", text: "hi", message: nil, idempotencyKey: "k"))["msg_type"] as? String, "text")
+        c.url = "not a url"
+        XCTAssertThrowsError(try Forwarder.request(for: c, secret: "", text: "hi", message: nil, idempotencyKey: "k"))
+    }
+
+    func testBodyErrors() {
+        var c = ForwardChannel.new(.webhook)
+        c.webhookFormat = .wecom
+        XCTAssertThrowsError(try Forwarder.checkBody(c, data: Data(#"{"errcode":93000,"errmsg":"invalid webhook url"}"#.utf8)))
+        XCTAssertNoThrow(try Forwarder.checkBody(c, data: Data(#"{"errcode":0,"errmsg":"ok"}"#.utf8)))
+        XCTAssertThrowsError(try Forwarder.checkBody(.new(.telegram), data: Data(#"{"ok":false,"description":"chat not found"}"#.utf8)))
+    }
+
+    func testParseTelegramChats() {
+        let data = Data("""
+        {"ok":true,"result":[
+          {"update_id":1,"message":{"chat":{"id":111,"first_name":"Lu","type":"private"},"text":"hi"}},
+          {"update_id":2,"message":{"chat":{"id":-100222,"title":"家庭群","type":"supergroup"},"text":"x"}},
+          {"update_id":3,"message":{"chat":{"id":111,"first_name":"Lu","type":"private"},"text":"again"}}
+        ]}
+        """.utf8)
+        XCTAssertEqual(Forwarder.parseTelegramChats(data), [
+            .init(id: "111", title: "Lu"),
+            .init(id: "-100222", title: "家庭群"),
+        ])
+    }
+
+    func testChannelFilter() {
+        var c = ForwardChannel.new(.telegram)
+        var m = sample
+        XCTAssertTrue(c.accepts(m))
+        c.accountIDs = [UUID()]
+        XCTAssertFalse(c.accepts(m), "不在所选邮箱中")
+        c.accountIDs = [m.accountID]
+        c.includeCodes = false
+        m.code = "1234"
+        XCTAssertFalse(c.accepts(m))
+        c.enabled = false
+        m.code = ""
+        XCTAssertFalse(c.accepts(m))
     }
 }

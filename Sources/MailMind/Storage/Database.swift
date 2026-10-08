@@ -89,6 +89,20 @@ final class Database: @unchecked Sendable {
         for name in ["headline", "notify_level", "deadline", "code"] where !columns.contains(name) {
             try run("ALTER TABLE messages ADD COLUMN \(name) TEXT DEFAULT ''")
         }
+        // v0.3：删除标记。保留记录（清空正文），避免下次同步又被拉回来
+        if !columns.contains("deleted") {
+            try run("ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0")
+        }
+        try run("""
+        CREATE TABLE IF NOT EXISTS examples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT DEFAULT '',
+            from_email TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """)
         try run("""
         CREATE TABLE IF NOT EXISTS senders (
             email TEXT PRIMARY KEY,
@@ -242,7 +256,7 @@ final class Database: @unchecked Sendable {
     }
 
     private static func whereClause(filter: Filter, search: String) -> (String, [SQLValue]) {
-        var conditions: [String] = []
+        var conditions: [String] = ["deleted = 0"]
         var args: [SQLValue] = []
         switch filter {
         case .all:
@@ -271,7 +285,7 @@ final class Database: @unchecked Sendable {
 
     /// 「问 AI」用的近期邮件索引（不含垃圾邮件）。
     func recentMessages(since: Date, limit: Int) throws -> [MailMessage] {
-        try query("SELECT \(Self.listColumns) FROM messages WHERE date >= ? AND category != '垃圾' ORDER BY date DESC LIMIT \(limit)",
+        try query("SELECT \(Self.listColumns) FROM messages WHERE date >= ? AND category != '垃圾' AND deleted = 0 ORDER BY date DESC LIMIT \(limit)",
                   [.double(since.timeIntervalSince1970)], map: Self.mapMessage)
     }
 
@@ -284,7 +298,7 @@ final class Database: @unchecked Sendable {
     }
 
     func pendingAIMessages(limit: Int) throws -> [MailMessage] {
-        let rows = try query("SELECT \(Self.listColumns), body_text FROM messages WHERE ai_status = 0 ORDER BY date DESC LIMIT \(limit)") { r -> MailMessage in
+        let rows = try query("SELECT \(Self.listColumns), body_text FROM messages WHERE ai_status = 0 AND deleted = 0 ORDER BY date DESC LIMIT \(limit)") { r -> MailMessage in
             var m = Self.mapMessage(r)
             m.bodyText = r.text(Self.listColumnCount)
             return m
@@ -293,7 +307,7 @@ final class Database: @unchecked Sendable {
     }
 
     func pendingAICount() -> Int {
-        (try? query("SELECT COUNT(*) FROM messages WHERE ai_status = 0") { Int($0.int(0)) }.first) ?? 0
+        (try? query("SELECT COUNT(*) FROM messages WHERE ai_status = 0 AND deleted = 0") { Int($0.int(0)) }.first) ?? 0
     }
 
     func saveAnalysis(id: String, _ a: AIAnalysis) throws {
@@ -324,6 +338,79 @@ final class Database: @unchecked Sendable {
                 [.text(category.rawValue), .text(importance.rawValue), .text(id)])
     }
 
+    /// 设置分类，同时写入 AI 给出的其他字段不变；用于规则覆盖。
+    func overrideCategory(id: String, category: MailCategory, notify: NotifyLevel? = nil) throws {
+        try setCategory(id: id, category: category)
+        if let notify {
+            try run("UPDATE messages SET notify_level = ? WHERE id = ?", [.text(notify.rawValue), .text(id)])
+        }
+    }
+
+    // MARK: - 删除
+
+    struct DeletionTarget: Equatable {
+        var id: String
+        var accountID: UUID
+        var folder: String
+        var uid: UInt32
+        /// 从 id 中解析出的 UIDVALIDITY，用于确认服务器上的 UID 仍然有效
+        var uidValidity: UInt32
+    }
+
+    func deletionTargets(ids: [String]) throws -> [DeletionTarget] {
+        var out: [DeletionTarget] = []
+        for chunk in ids.chunked(200) {
+            let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            out += try query("SELECT id, account_id, folder, uid FROM messages WHERE id IN (\(marks))", chunk.map { .text($0) }) { r in
+                let id = r.text(0)
+                let parts = id.components(separatedBy: ":")
+                let validity = parts.count >= 2 ? UInt32(parts[parts.count - 2]) ?? 0 : 0
+                return DeletionTarget(id: id, accountID: UUID(uuidString: r.text(1)) ?? UUID(), folder: r.text(2),
+                                      uid: UInt32(truncatingIfNeeded: r.int(3)), uidValidity: validity)
+            }
+        }
+        return out
+    }
+
+    /// 本地标记为已删除并清空正文。记录本身保留，防止再次同步时被拉回。
+    func markDeleted(ids: [String]) throws {
+        for id in ids {
+            try run("UPDATE messages SET deleted = 1, body_text = '', body_html = '', translation = '' WHERE id = ?", [.text(id)])
+        }
+    }
+
+    // MARK: - AI 学习示例
+
+    func addExample(accountID: UUID?, fromEmail: String, subject: String, category: String) throws {
+        let email = fromEmail.lowercased()
+        // 同一发件人 + 主题只保留最新一条
+        try run("DELETE FROM examples WHERE from_email = ? AND subject = ?", [.text(email), .text(subject)])
+        try run("INSERT INTO examples (account_id, from_email, subject, category, created_at) VALUES (?,?,?,?,?)",
+                [.text(accountID?.uuidString ?? ""), .text(email), .text(subject), .text(category),
+                 .double(Date().timeIntervalSince1970)])
+    }
+
+    func examples(limit: Int = 200) throws -> [ClassificationExample] {
+        try query("SELECT id, account_id, from_email, subject, category, created_at FROM examples ORDER BY created_at DESC LIMIT \(limit)") {
+            ClassificationExample(id: $0.int(0), accountID: UUID(uuidString: $0.text(1)), fromEmail: $0.text(2),
+                                  subject: $0.text(3), category: $0.text(4),
+                                  createdAt: Date(timeIntervalSince1970: $0.double(5)))
+        }
+    }
+
+    func deleteExample(id: Int64) throws {
+        try run("DELETE FROM examples WHERE id = ?", [.int(id)])
+    }
+
+    func clearExamples() throws {
+        try run("DELETE FROM examples")
+    }
+
+    /// 用于把新规则应用到已有邮件：最近的邮件（含垃圾，不含已删除）。
+    func recentAll(limit: Int = 3000) throws -> [MailMessage] {
+        try query("SELECT \(Self.listColumns) FROM messages WHERE deleted = 0 ORDER BY date DESC LIMIT \(limit)", map: Self.mapMessage)
+    }
+
     func setRead(ids: [String], read: Bool) throws {
         for id in ids {
             try run("UPDATE messages SET is_read = ? WHERE id = ?", [.int(read ? 1 : 0), .text(id)])
@@ -336,7 +423,7 @@ final class Database: @unchecked Sendable {
 
     /// 已完成 AI 分析、尚未经过通知策略判断的邮件。
     func notificationCandidates() throws -> [MailMessage] {
-        try query("SELECT \(Self.listColumns) FROM messages WHERE notified = 0 AND ai_status = 1 ORDER BY date ASC",
+        try query("SELECT \(Self.listColumns) FROM messages WHERE notified = 0 AND ai_status = 1 AND deleted = 0 ORDER BY date ASC",
                   map: Self.mapMessage)
     }
 
@@ -375,12 +462,12 @@ final class Database: @unchecked Sendable {
     /// 侧边栏各项的未读数量。
     func unreadCounts() throws -> [String: Int] {
         var result: [String: Int] = [:]
-        for (key, n) in try query("SELECT category, COUNT(*) FROM messages WHERE is_read = 0 GROUP BY category", map: { ($0.text(0), Int($0.int(1))) }) {
+        for (key, n) in try query("SELECT category, COUNT(*) FROM messages WHERE is_read = 0 AND deleted = 0 GROUP BY category", map: { ($0.text(0), Int($0.int(1))) }) {
             result[key] = n
         }
-        result["@important"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND importance = 'high' AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
-        result["@action"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND action != '' AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
-        result["@all"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
+        result["@important"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND deleted = 0 AND importance = 'high' AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
+        result["@action"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND deleted = 0 AND action != '' AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
+        result["@all"] = try query("SELECT COUNT(*) FROM messages WHERE is_read = 0 AND deleted = 0 AND category != '垃圾'") { Int($0.int(0)) }.first ?? 0
         return result
     }
 
@@ -408,7 +495,7 @@ final class Database: @unchecked Sendable {
     func digestMessages(from: Date, to: Date) throws -> [MailMessage] {
         try query("""
         SELECT \(Self.listColumns) FROM messages
-        WHERE date >= ? AND date < ? AND ai_status = 1 AND importance != 'high'
+        WHERE date >= ? AND date < ? AND ai_status = 1 AND importance != 'high' AND deleted = 0
         ORDER BY category, date DESC LIMIT 400
         """, [.double(from.timeIntervalSince1970), .double(to.timeIntervalSince1970)], map: Self.mapMessage)
     }

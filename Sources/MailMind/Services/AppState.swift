@@ -40,7 +40,15 @@ final class AppState {
     var unreadCounts: [String: Int] = [:]
     var digests: [Digest] = []
     var selectedDigestID: Int64?
-    var senderRules: [String: SenderRule] = [:]
+    /// 手动纠正过的分类（AI 学习示例）
+    var examples: [ClassificationExample] = []
+    /// 正在删除时显示进度
+    var isDeleting = false
+    /// 打开「标记」面板
+    var markRequest: MarkRequest?
+    /// 待确认删除的邮件
+    var deleteRequest: [String]?
+    var showCleanup = false
     var accountStatus: [UUID: AccountStatus] = [:]
 
     var isSyncing = false
@@ -87,7 +95,8 @@ final class AppState {
 
         reload()
         reloadDigests()
-        reloadSenderRules()
+        migrateSenderRules()
+        reloadExamples()
         refreshRealtime()
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -158,8 +167,19 @@ final class AppState {
         if selectedDigestID == nil { selectedDigestID = digests.first?.id }
     }
 
-    func reloadSenderRules() {
-        senderRules = Dictionary(((try? db.senderRules()) ?? []).map { ($0.email, $0) }, uniquingKeysWith: { a, _ in a })
+    func reloadExamples() {
+        examples = (try? db.examples()) ?? []
+    }
+
+    /// 旧版「发件人规则」（VIP / 静音 / 固定分类）迁移为通用规则，只执行一次。
+    private func migrateSenderRules() {
+        guard !settings.senderRulesMigrated else { return }
+        let old = (try? db.senderRules()) ?? []
+        settings.mailRules += old.map { r in
+            MailRule(sender: r.email, category: r.category,
+                     notify: r.vip ? .always : (r.muted ? .never : .auto))
+        }.filter(\.isValid)
+        settings.senderRulesMigrated = true
     }
 
     func message(id: String) -> MailMessage? {
@@ -197,10 +217,18 @@ final class AppState {
         reload()
     }
 
-    // MARK: - 分类与发件人规则
+    // MARK: - 分类与规则
 
-    func setCategory(_ ids: [String], _ category: MailCategory) {
-        for id in ids { try? db.setCategory(id: id, category: category) }
+    /// 手动修改分类。learn 为 true 时记为 AI 学习示例，以后相似邮件也这样归类。
+    func setCategory(_ ids: [String], _ category: MailCategory, learn: Bool = true) {
+        for id in ids {
+            guard let m = message(id: id) else { continue }
+            try? db.setCategory(id: id, category: category)
+            if learn && settings.learnFromCorrections && m.category != category.rawValue {
+                try? db.addExample(accountID: m.accountID, fromEmail: m.fromEmail, subject: m.subject, category: category.rawValue)
+            }
+        }
+        reloadExamples()
         reload()
     }
 
@@ -215,22 +243,105 @@ final class AppState {
         Task { await runAI() }
     }
 
-    func senderRule(for email: String) -> SenderRule {
-        senderRules[email.lowercased()] ?? SenderRule(email: email.lowercased())
+    /// 命中这封邮件的规则（用于列表上的 VIP 标记、详情页说明）。
+    func rule(for m: MailMessage) -> MailRule? {
+        MailRule.firstMatch(settings.mailRules, for: m)
     }
 
-    func updateSenderRule(_ email: String, _ change: (inout SenderRule) -> Void) {
-        var rule = senderRule(for: email)
-        change(&rule)
-        try? db.saveSenderRule(rule)
-        reloadSenderRules()
+    /// 只针对单个发件人地址、所有邮箱的规则（右键菜单里的快捷开关用）。
+    func senderOnlyRule(_ email: String) -> MailRule? {
+        let e = email.lowercased()
+        return settings.mailRules.first { $0.accountID == nil && $0.sender.lowercased() == e && $0.keywordList.isEmpty }
     }
 
-    /// 以后该发件人的邮件都归为某个分类（同时修正已有邮件）。
-    func setSenderCategory(_ email: String, _ category: MailCategory?) {
-        updateSenderRule(email) { $0.category = category?.rawValue ?? "" }
-        if let category { try? db.applyCategory(category, toSender: email) }
+    /// 快捷设置发件人的提醒方式（总是提醒 / 不提醒 / 恢复默认）。
+    func setSenderNotify(_ email: String, _ notify: RuleNotify) {
+        if var r = senderOnlyRule(email) {
+            r.notify = notify
+            if r.isValid { saveRule(r, applyToExisting: false) } else { deleteRule(r.id) }
+        } else if notify != .auto {
+            saveRule(MailRule(sender: email.lowercased(), notify: notify), applyToExisting: false)
+        }
+    }
+
+    /// 新建或更新规则；applyToExisting 时同时修正已有的同类邮件，返回修改的数量。
+    @discardableResult
+    func saveRule(_ rule: MailRule, applyToExisting: Bool) -> Int {
+        if let i = settings.mailRules.firstIndex(where: { $0.id == rule.id }) {
+            settings.mailRules[i] = rule
+        } else {
+            settings.mailRules.append(rule)
+        }
+        guard applyToExisting, let c = MailCategory(rawValue: rule.category) else { return 0 }
+        let n = applyRule(rule, category: c)
         reload()
+        return n
+    }
+
+    func deleteRule(_ id: UUID) {
+        settings.mailRules.removeAll { $0.id == id }
+    }
+
+    /// 已有邮件中会被该规则改变分类的数量（用于标记面板的提示）。
+    func countAffected(by rules: [MailRule], excluding: Set<String> = []) -> Int {
+        let rules = rules.filter { !$0.category.isEmpty }
+        guard !rules.isEmpty else { return 0 }
+        return ((try? db.recentAll()) ?? []).filter { m in
+            !excluding.contains(m.id) && rules.contains { r in
+                m.category != r.category && r.matches(m) && !(r.exceptCodes && !m.code.isEmpty)
+            }
+        }.count
+    }
+
+    private func applyRule(_ rule: MailRule, category: MailCategory) -> Int {
+        var n = 0
+        for m in (try? db.recentAll()) ?? [] where m.category != rule.category && rule.matches(m) {
+            if rule.exceptCodes && !m.code.isEmpty { continue }
+            try? db.setCategory(id: m.id, category: category)
+            n += 1
+        }
+        return n
+    }
+
+    func deleteExample(_ id: Int64) {
+        try? db.deleteExample(id: id)
+        reloadExamples()
+    }
+
+    func clearExamples() {
+        try? db.clearExamples()
+        reloadExamples()
+    }
+
+    // MARK: - 删除
+
+    /// 删除邮件：本地立即隐藏，然后把服务器上的邮件移到「已删除」文件夹。
+    /// 「邮件」App 读取的账户只从 MailMind 中移除。
+    func deleteMessages(_ ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        let targets = (try? db.deletionTargets(ids: ids)) ?? []
+        try? db.markDeleted(ids: ids)
+        selectedIDs.subtract(ids)
+        reload()
+
+        isDeleting = true
+        defer { isDeleting = false }
+        var moved = 0
+        var failures: [String] = []
+        for (accountID, items) in Dictionary(grouping: targets, by: \.accountID) {
+            guard let account = account(id: accountID), !account.isAppleMail else { continue }
+            statusText = "正在从 \(account.displayName) 删除 \(items.count) 封…"
+            do {
+                let credential = try await credential(for: account)
+                moved += try await SyncEngine.moveToTrash(account: account, credential: credential, targets: items)
+            } catch {
+                failures.append("\(account.displayName)：删除失败，\(error.localizedDescription)")
+            }
+        }
+        lastErrors += failures
+        statusText = failures.isEmpty
+            ? "已删除 \(ids.count) 封" + (moved > 0 ? "，已移到邮箱的「已删除」文件夹" : "")
+            : "已从列表移除 \(ids.count) 封，部分邮箱删除失败"
     }
 
     // MARK: - 打开
@@ -415,8 +526,11 @@ final class AppState {
         isRunningAI = true
         defer { isRunningAI = false }
 
-        let options = settings.analysisOptions
-        let rules = senderRules
+        var options = settings.analysisOptions
+        if settings.learnFromCorrections {
+            options.examples = examples.prefix(40).map(\.promptLine)
+        }
+        let rules = settings.mailRules
         let db = self.db
         var attempted = Set<String>()
         while true {
@@ -427,18 +541,18 @@ final class AppState {
             await withTaskGroup(of: Void.self) { group in
                 for m in batch {
                     group.addTask {
-                        let rule = rules[m.senderKey]
+                        let rule = MailRule.firstMatch(rules, for: m, text: String(m.bodyText.prefix(5000)))
                         let ruleCategory = rule.flatMap { MailCategory(rawValue: $0.category) }
-                        // 发件人规则命中低价值分类：本地直接归类，不花 AI 的钱。
-                        if let c = ruleCategory, [.marketing, .spam, .social, .notification].contains(c) {
+                        // 规则命中低价值分类：本地直接归类，不花 AI 的钱。
+                        // 勾选了「验证码除外」的规则需要 AI 先判断是不是验证码。
+                        if let c = ruleCategory, rule?.exceptCodes != true, [.marketing, .spam, .social, .notification].contains(c) {
                             try? db.saveAnalysis(id: m.id, Classifier.localAnalysis(for: m, category: c))
                             return
                         }
                         do {
                             var result = try await Classifier.analyze(m, client: client, options: options)
-                            if let c = ruleCategory {
-                                result.category = c.rawValue
-                                if c == .important { result.importance = .high }
+                            if let c = ruleCategory, !(rule?.exceptCodes == true && !result.code.isEmpty) {
+                                result.apply(category: c)
                             }
                             try db.saveAnalysis(id: m.id, result)
                         } catch {
@@ -457,8 +571,7 @@ final class AppState {
             quietHoursEnabled: settings.quietHoursEnabled,
             quietStart: settings.quietStart,
             quietEnd: settings.quietEnd,
-            vipSenders: Set(senderRules.values.filter(\.vip).map(\.email)),
-            mutedSenders: Set(senderRules.values.filter(\.muted).map(\.email))
+            rules: settings.mailRules
         )
     }
 
@@ -468,6 +581,7 @@ final class AppState {
         try? db.markNotified(ids: candidates.map(\.id))
 
         let policy = notificationPolicy()
+        forward(candidates, policy: policy)
         let decided = candidates.map { ($0, policy.decide($0)) }.filter { $0.1 != .none }
         guard !decided.isEmpty else { return }
         if decided.count > 3 {
@@ -477,6 +591,51 @@ final class AppState {
                 Notifier.shared.notify(m, decision: d, accountName: account(id: m.accountID)?.displayName)
             }
         }
+    }
+
+    // MARK: - 转发
+
+    /// 按各转发渠道的设置，把重要邮件发到 Telegram / 微信 / Webhook。
+    /// 转发不受「重要邮件通知」开关和勿扰时段影响。
+    private func forward(_ candidates: [MailMessage], policy: NotificationPolicy) {
+        let channels = settings.forwardChannels.filter(\.enabled)
+        guard !channels.isEmpty else { return }
+        var p = policy
+        p.enabled = true
+        p.quietHoursEnabled = false
+        let decided = candidates.map { ($0, p.decide($0)) }
+        for c in channels {
+            let picked = decided.filter { m, d in
+                c.accepts(m) && (c.trigger == .urgent ? d == .alert : d != .none)
+            }.map(\.0)
+            guard !picked.isEmpty else { continue }
+            let items = picked.map { ($0, account(id: $0.accountID)?.displayName) }
+            Task {
+                do {
+                    if items.count > 3 {
+                        try await Forwarder.send(c, text: Forwarder.batchText(items), message: nil,
+                                                 idempotencyKey: "batch-\(items[0].0.id)-\(items.count)")
+                    } else {
+                        for (m, name) in items {
+                            try await Forwarder.send(c, text: Forwarder.text(for: m, accountName: name), message: m, idempotencyKey: m.id)
+                        }
+                    }
+                } catch {
+                    lastErrors.append("转发到「\(c.name)」失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 发送一条测试消息。
+    func testForward(_ c: ForwardChannel, secret: String? = nil) async throws {
+        var sample = MailMessage(id: "test", accountID: UUID(), folder: "INBOX", uid: 0)
+        sample.fromName = "MailMind"
+        sample.fromEmail = "test@mailmind.app"
+        sample.subject = "测试转发"
+        sample.headline = "MailMind：转发设置成功，重要邮件会发到这里"
+        sample.summary = "这是一条测试消息。"
+        try await Forwarder.send(c, text: Forwarder.text(for: sample, accountName: nil), message: sample, secret: secret)
     }
 
     /// 在近 30 天的邮件里回答问题，返回回答与被引用的邮件。

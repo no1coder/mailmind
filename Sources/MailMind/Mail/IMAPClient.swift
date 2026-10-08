@@ -42,8 +42,9 @@ private final class DoneOnce: @unchecked Sendable {
     }
 }
 
-/// 极简、只读的 IMAP4rev1 客户端：登录、EXAMINE、UID SEARCH、UID FETCH。
-/// 使用 EXAMINE 和 BODY.PEEK，不会改变服务器上邮件的已读状态。
+/// 极简的 IMAP4rev1 客户端：登录、EXAMINE、UID SEARCH、UID FETCH。
+/// 同步使用 EXAMINE 和 BODY.PEEK，不会改变服务器上邮件的已读状态；
+/// 只有用户主动删除时才会 SELECT 并把邮件移到「已删除」。
 final class IMAPClient {
     private let connection: IMAPConnection
     private var tagCounter = 0
@@ -186,6 +187,95 @@ final class IMAPClient {
         return out
     }
 
+    // MARK: - 删除（移到「已删除」）
+
+    struct FolderEntry: Equatable {
+        var name: String
+        var attributes: [String]
+    }
+
+    /// 列出所有文件夹。
+    func listFolders() async throws -> [FolderEntry] {
+        try await command("LIST \"\" \"*\"").compactMap(Self.parseList)
+    }
+
+    /// 解析一行 LIST 响应，例如：* LIST (\HasNoChildren \Trash) "/" "Deleted Messages"
+    static func parseList(_ r: IMAPResponse) -> FolderEntry? {
+        let text = r.text
+        guard text.hasPrefix("* LIST ("), let close = text.firstIndex(of: ")") else { return nil }
+        let attrs = text[text.index(text.startIndex, offsetBy: 8)..<close].split(separator: " ").map(String.init)
+        var rest = text[text.index(after: close)...].trimmingCharacters(in: .whitespaces)
+        // 跳过分隔符："/" 或 NIL
+        if rest.hasPrefix("\"") {
+            guard let end = rest.dropFirst().firstIndex(of: "\"") else { return nil }
+            rest = String(rest[rest.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+        } else if rest.uppercased().hasPrefix("NIL") {
+            rest = String(rest.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        }
+        let name: String
+        if literalLength(rest) != nil, let lit = r.literals.first {
+            name = String(decoding: lit, as: UTF8.self)
+        } else if rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2 {
+            name = String(rest.dropFirst().dropLast())
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        } else {
+            name = rest
+        }
+        return name.isEmpty ? nil : FolderEntry(name: name, attributes: attrs)
+    }
+
+    /// 找「已删除」文件夹：优先 SPECIAL-USE 的 \Trash 标记，否则按常见名称匹配。
+    static func trashFolder(in folders: [FolderEntry]) -> String? {
+        if let f = folders.first(where: { $0.attributes.contains { $0.caseInsensitiveCompare("\\Trash") == .orderedSame } }) {
+            return f.name
+        }
+        // 名称为修改版 UTF-7：&XfJSIJZk- = 已删除，&XfJSIJZkkK5O9g- = 已删除邮件，&V4NXPnux- = 垃圾箱
+        let known = ["trash", "deleted messages", "deleted items", "deleted", "[gmail]/trash", "[google mail]/trash",
+                     "&xfjsijzk-", "&xfjsijzkkk5o9g-", "&v4nxpnux-", "inbox.trash", "inbox/trash"]
+        return folders.first { known.contains($0.name.lowercased()) }?.name
+    }
+
+    /// 生成把 UID 集合移到「已删除」的命令序列（需先 SELECT）。
+    /// - 支持 MOVE：UID MOVE
+    /// - 否则：UID COPY 到已删除 + 标记 \Deleted；支持 UIDPLUS 时只清除这几封（UID EXPUNGE），
+    ///   不支持时不执行 EXPUNGE，以免误删其他客户端标记过的邮件
+    /// - 找不到已删除文件夹：只标记 \Deleted
+    static func trashCommands(uids: [UInt32], trash: String?, capabilities: Set<String>) -> [String] {
+        let set = uids.sorted().map(String.init).joined(separator: ",")
+        guard let trash else { return ["UID STORE \(set) +FLAGS.SILENT (\\Deleted)"] }
+        let quoted = quote(trash)
+        if capabilities.contains("MOVE") { return ["UID MOVE \(set) \(quoted)"] }
+        var cmds = ["UID COPY \(set) \(quoted)", "UID STORE \(set) +FLAGS.SILENT (\\Deleted)"]
+        if capabilities.contains("UIDPLUS") { cmds.append("UID EXPUNGE \(set)") }
+        return cmds
+    }
+
+    /// 以读写方式打开文件夹，返回 UIDVALIDITY。
+    func select(_ folder: String) async throws -> UInt32 {
+        var validity: UInt32 = 0
+        for r in try await command("SELECT \(quote(folder))") {
+            if let v = Self.firstMatch("UIDVALIDITY (\\d+)", in: r.text) { validity = UInt32(v) ?? 0 }
+        }
+        return validity
+    }
+
+    /// 把邮件移到「已删除」。uidValidity 不一致时说明文件夹已重建，UID 不可信，直接放弃。
+    /// 返回实际处理的数量。
+    func moveToTrash(folder: String, uidValidity: UInt32, uids: [UInt32], trash: String?, capabilities: Set<String>) async throws -> Int {
+        guard !uids.isEmpty else { return 0 }
+        let current = try await select(folder)
+        guard uidValidity == 0 || current == uidValidity else { return 0 }
+        // 已经在「已删除」里的邮件：只标记删除
+        let target = trash.map { $0 == folder ? nil : $0 } ?? nil
+        for chunk in uids.chunked(100) {
+            for cmd in Self.trashCommands(uids: chunk, trash: target, capabilities: capabilities) {
+                try await command(cmd, timeout: 120)
+            }
+        }
+        return uids.count
+    }
+
     // MARK: - 命令与响应
 
     @discardableResult
@@ -248,7 +338,9 @@ final class IMAPClient {
         return Int(inner.hasSuffix("+") ? inner.dropLast() : inner)
     }
 
-    private func quote(_ s: String) -> String {
+    private func quote(_ s: String) -> String { Self.quote(s) }
+
+    static func quote(_ s: String) -> String {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 

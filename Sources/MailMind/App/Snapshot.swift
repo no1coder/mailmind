@@ -33,10 +33,37 @@ enum Snapshot {
         shot("settings-ai", 660, 560, AISettingsView())
 
         let state = AppState.shared
+        let saved = (state.settings.accounts, state.settings.mailRules, state.settings.forwardChannels)
+        defer {
+            state.settings.accounts = saved.0
+            state.settings.mailRules = saved.1
+            state.settings.forwardChannels = saved.2
+        }
         state.settings.accounts = Demo.accounts
         for (i, a) in Demo.accounts.enumerated() {
             state.accountStatus[a.id] = AccountStatus(lastSync: Date(), error: nil, realtime: i != 1)
         }
+        // 带滚动视图的设置页需在主界面之前渲染，否则离屏截图是空白
+        state.settings.mailRules = [
+            MailRule(sender: "@shop-deals.com", category: "垃圾", notify: .never, exceptCodes: true),
+            MailRule(accountID: Demo.accounts[1].id, sender: "", keywords: "招聘, 内推", category: "营销"),
+            MailRule(sender: "wang@company.com", notify: .always),
+        ]
+        state.examples = [
+            ClassificationExample(id: 1, accountID: nil, fromEmail: "news@coffee.com", subject: "本周新品 8 折", category: "营销", createdAt: Date()),
+            ClassificationExample(id: 2, accountID: nil, fromEmail: "hr@company.com", subject: "年度体检安排", category: "工作", createdAt: Date()),
+        ]
+        shot("settings-rules", 700, 580, MailRulesView())
+        state.settings.forwardChannels = []
+        shot("settings-forward", 700, 580, ForwardSettingsView())
+        var tg = ForwardChannel.new(.telegram)
+        tg.chatID = "123456789"
+        shot("forward-telegram", 600, 640, ForwardEditor(channel: tg, isNew: true))
+        var wx = ForwardChannel.new(.openclaw)
+        wx.to = "wxid_example"
+        shot("forward-wechat", 600, 640, ForwardEditor(channel: wx, isNew: true))
+        state.settings.forwardChannels = [tg, wx]
+        shot("settings-forward-list", 700, 580, ForwardSettingsView())
         state.filter = .inbox
         state.messages = Demo.messages
         state.unreadCounts = ["@important": 2, "@action": 2, "@all": 3, "重要": 1, "工作": 1, "通知": 1]
@@ -49,6 +76,11 @@ enum Snapshot {
             Divider()
             MessageDetailView(message: Demo.messages[0])
         })
+
+        // 标记、清理、规则、转发
+        state.messages.append(Demo.promo)
+        shot("mark-spam", 560, 640, MarkSheet(request: MarkRequest(ids: [Demo.promo.id], category: .spam)))
+        shot("cleanup", 600, 600, CleanupView())
     }
 
     static func render<V: View>(_ view: V, width: CGFloat, height: CGFloat, to url: URL, dark: Bool) {
@@ -75,8 +107,53 @@ enum Snapshot {
     }
 }
 
+/// 普通运行时是 ScrollView；截图模式下 ScrollView 离屏渲染偶尔是空白，改为直接排列。
+struct SnapshotSafeScroll<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if Snapshot.isActive {
+            VStack(spacing: 0) {
+                content()
+                Spacer(minLength: 0)
+            }
+        } else {
+            ScrollView { content() }
+        }
+    }
+}
+
 /// 截图用的示例数据。
 enum Demo {
+    static let promo: MailMessage = {
+        var x = MailMessage(id: "demo-promo", accountID: account.id, folder: "INBOX", uid: 99)
+        x.fromName = "超值好物"
+        x.fromEmail = "promo@shop-deals.com"
+        x.subject = "【限时】双十一预售 5 折起，最后 3 小时！"
+        x.category = MailCategory.marketing.rawValue
+        x.aiStatus = .done
+        return x
+    }()
+
+    static let spam: [(String, String, [MailMessage])] = {
+        func list(_ n: Int, _ email: String, _ subject: String, _ reason: String) -> [MailMessage] {
+            (0..<n).map { i in
+                var x = MailMessage(id: "spam-\(email)-\(i)", accountID: account.id, folder: "INBOX", uid: UInt32(i))
+                x.fromEmail = email
+                x.subject = subject
+                x.reason = reason
+                return x
+            }
+        }
+        return [
+            ("promo@shop-deals.com", "超值好物", list(9, "promo@shop-deals.com", "【限时】双十一预售 5 折起", "群发促销，带有大量追踪链接")),
+            ("win@lucky-prize.top", "中奖通知中心", list(6, "win@lucky-prize.top", "恭喜您获得 iPhone 一台，请填写收货信息", "中奖诈骗，冒充平台索要个人信息")),
+            ("service@icbc-verify.cc", "工商银行", list(4, "service@icbc-verify.cc", "您的账户存在异常，请立即验证", "冒充银行的钓鱼邮件，域名与官方不符")),
+            ("seo@growth-agency.net", "Growth Agency", list(3, "seo@growth-agency.net", "让您的网站排名第一", "陌生营销推广")),
+            ("noreply@weekly-news.io", "Weekly News", list(1, "noreply@weekly-news.io", "本周科技新闻精选", "订阅资讯，可能是你主动订阅的")),
+        ]
+    }()
+
     static let account = MailAccount(displayName: "zhangsan@qq.com", email: "zhangsan@qq.com",
                                      username: "zhangsan@qq.com", host: "imap.qq.com")
 

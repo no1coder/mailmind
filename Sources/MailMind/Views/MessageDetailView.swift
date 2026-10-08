@@ -67,11 +67,18 @@ struct MessageDetailView: View {
                 .disabled(state.makeAIClient() == nil)
 
                 Menu {
-                    SenderMenuItems(message: message)
+                    MarkMenuItems(ids: [message.id], message: message)
                 } label: {
-                    Label("发件人", systemImage: "person.crop.circle")
+                    Label("标记", systemImage: "tag")
                 }
-                .help("VIP、静音、固定分类")
+                .help("标记分类、设置规则、提醒方式")
+
+                Button {
+                    state.deleteRequest = [message.id]
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+                .help("删除（⌘⌫）")
             }
         }
         .sheet(isPresented: $showReply) {
@@ -97,11 +104,11 @@ struct MessageDetailView: View {
                     Text(message.sender).font(.callout.weight(.semibold))
                     Text(message.fromEmail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                if state.senderRules[message.senderKey]?.vip == true {
-                    Text("VIP").font(.caption.bold()).foregroundStyle(.orange)
-                }
-                if state.senderRules[message.senderKey]?.muted == true {
-                    Image(systemName: "bell.slash").foregroundStyle(.secondary).help("已静音")
+                if let rule = state.rule(for: message) {
+                    Label(rule.actionText, systemImage: "list.bullet.rectangle")
+                        .font(.caption)
+                        .foregroundStyle(rule.notify == .always ? .orange : .secondary)
+                        .help("命中规则：\(rule.conditionText)")
                 }
                 Spacer()
                 Text(message.date, format: .dateTime.year().month().day().hour().minute())

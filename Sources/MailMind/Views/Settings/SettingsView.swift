@@ -8,14 +8,16 @@ struct SettingsView: View {
                 .tabItem { Label("账户", systemImage: "at") }
             AISettingsView()
                 .tabItem { Label("AI 服务", systemImage: "sparkles") }
+            MailRulesView()
+                .tabItem { Label("规则", systemImage: "list.bullet.rectangle") }
             RulesSettingsView()
-                .tabItem { Label("分类规则", systemImage: "list.bullet.rectangle") }
+                .tabItem { Label("提示词", systemImage: "text.bubble") }
             NotificationSettingsView()
                 .tabItem { Label("同步与通知", systemImage: "bell.badge") }
-            SenderRulesView()
-                .tabItem { Label("发件人", systemImage: "person.2") }
+            ForwardSettingsView()
+                .tabItem { Label("转发", systemImage: "arrowshape.turn.up.right") }
         }
-        .frame(width: 660, height: 560)
+        .frame(width: 700, height: 580)
     }
 }
 
@@ -137,10 +139,10 @@ struct NotificationSettingsView: View {
                 Text("通知")
             } footer: {
                 Text("""
-                🔔 响铃：真人发来需尽快回复、48 小时内截止、账号安全异常、付款异常、验证码、VIP 发件人
+                🔔 响铃：真人发来需尽快回复、48 小时内截止、账号安全异常、付款异常、验证码、规则设为「总是提醒」的邮件
                 🔕 静默：其他重要邮件，只进入通知中心
-                ✖︎ 不通知：营销、资讯、社交、垃圾、已在其他设备读过、静音的发件人
-                勿扰时段内只有 VIP 和验证码会响铃；一次超过 3 封会合并为一条通知。
+                ✖︎ 不通知：营销、资讯、社交、垃圾、已在其他设备读过、规则设为「不提醒」的邮件
+                勿扰时段内只有「总是提醒」和验证码会响铃；一次超过 3 封会合并为一条通知。
                 """)
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -189,52 +191,5 @@ struct NotificationSettingsView: View {
                 minutes.wrappedValue = (c.hour ?? 0) * 60 + (c.minute ?? 0)
             }
         )
-    }
-}
-
-// MARK: - 发件人规则
-
-struct SenderRulesView: View {
-    @Environment(AppState.self) private var state
-
-    var body: some View {
-        let rules = state.senderRules.values.sorted { $0.email < $1.email }
-        VStack(alignment: .leading) {
-            Table(rules) {
-                TableColumn("发件人", value: \.email)
-                TableColumn("VIP") { r in
-                    Toggle("", isOn: Binding(get: { r.vip }, set: { v in
-                        state.updateSenderRule(r.email) { $0.vip = v; if v { $0.muted = false } }
-                    })).labelsHidden()
-                }
-                .width(40)
-                TableColumn("静音") { r in
-                    Toggle("", isOn: Binding(get: { r.muted }, set: { v in
-                        state.updateSenderRule(r.email) { $0.muted = v; if v { $0.vip = false } }
-                    })).labelsHidden()
-                }
-                .width(40)
-                TableColumn("固定分类") { r in
-                    Picker("", selection: Binding(get: { r.category }, set: { v in
-                        state.setSenderCategory(r.email, MailCategory(rawValue: v))
-                    })) {
-                        Text("交给 AI").tag("")
-                        ForEach(MailCategory.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                    }
-                    .labelsHidden()
-                }
-                .width(110)
-            }
-            .overlay {
-                if rules.isEmpty {
-                    ContentUnavailableView("还没有发件人规则", systemImage: "person.2",
-                                           description: Text("在邮件上右键 →「设为 VIP」「静音此发件人」「以后都归为…」即可添加"))
-                }
-            }
-            Text("VIP：总是响铃提醒（包括勿扰时段）。静音：永不提醒。固定分类为营销 / 垃圾 / 社交 / 通知时不再调用 AI，节省费用。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
     }
 }
