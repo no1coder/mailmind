@@ -119,7 +119,7 @@ final class AppSettings {
     }
 
     var analysisOptions: AnalysisOptions {
-        AnalysisOptions(translate: autoTranslate, targetLanguage: targetLanguage, customRules: customRules)
+        AnalysisOptions(targetLanguage: targetLanguage, customRules: customRules)
     }
 
     /// 最近一次（不晚于 now）应当生成汇总的时间点。

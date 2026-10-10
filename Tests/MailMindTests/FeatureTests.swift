@@ -415,7 +415,7 @@ final class MailRuleTests: XCTestCase {
     }
 
     func testApplyCategoryAdjustsImportance() {
-        var a = AIAnalysis(category: "工作", importance: .high, language: "zh", summary: "", translation: "", action: "", reason: "",
+        var a = AIAnalysis(category: "工作", importance: .high, language: "zh", summary: "", action: "", reason: "",
                            notify: .urgent)
         a.apply(category: .spam)
         XCTAssertEqual(a.importance, .low)
@@ -426,7 +426,7 @@ final class MailRuleTests: XCTestCase {
     }
 
     func testExamplesInPrompt() throws {
-        var o = AnalysisOptions(translate: false, targetLanguage: "简体中文", customRules: "")
+        var o = AnalysisOptions(targetLanguage: "简体中文", customRules: "")
         XCTAssertFalse(Classifier.systemPrompt(o).contains("手动纠正"))
         let db = try Database(path: ":memory:")
         try db.addExample(accountID: nil, fromEmail: "Promo@Shop.com", subject: "会员日", category: "垃圾")

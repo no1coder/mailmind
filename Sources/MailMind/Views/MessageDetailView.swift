@@ -16,10 +16,22 @@ struct MessageDetailView: View {
     @State private var bodyHTML = ""
     @State private var allowRemoteContent = false
     @State private var showReply = false
+    @State private var translation = ""
+    @State private var translating = false
+    @State private var translateError: String?
+    /// 当前显示的邮件；翻译返回时用它判断用户是否已经切到别的邮件。
+    @State private var loadedID = ""
+
+    /// 外文邮件（或语言判断不确定时）提供「译文」页。
+    private var offersTranslation: Bool {
+        if !translation.isEmpty { return true }
+        guard !message.language.isEmpty else { return false }
+        return Classifier.needsTranslation(language: message.language, targetLanguage: state.settings.targetLanguage) != false
+    }
 
     private var availableTabs: [Tab] {
         var tabs: [Tab] = []
-        if !message.translation.isEmpty { tabs.append(.translation) }
+        if offersTranslation { tabs.append(.translation) }
         tabs.append(.original)
         if !bodyHTML.isEmpty { tabs.append(.html) }
         return tabs
@@ -89,7 +101,32 @@ struct MessageDetailView: View {
             let body = (try? state.db.body(id: message.id)) ?? (text: "", html: "")
             bodyText = body.text
             bodyHTML = body.html
-            tab = message.translation.isEmpty ? .original : .translation
+            loadedID = message.id
+            translation = message.translation
+            translating = false
+            translateError = nil
+            let auto = state.settings.autoTranslate && state.makeAIClient() != nil
+                && Classifier.needsTranslation(language: message.language, targetLanguage: state.settings.targetLanguage) == true
+            tab = !translation.isEmpty || auto ? .translation : .original
+            if translation.isEmpty && auto { await runTranslation() }
+        }
+    }
+
+    private func runTranslation() async {
+        let id = message.id
+        translating = true
+        translateError = nil
+        let result: Result<String, Error>
+        do {
+            result = .success(try await state.translate(message))
+        } catch {
+            result = .failure(error)
+        }
+        guard loadedID == id, !Task.isCancelled else { return }
+        translating = false
+        switch result {
+        case .success(let text): translation = text
+        case .failure(let error): translateError = error.localizedDescription
         }
     }
 
@@ -139,7 +176,25 @@ struct MessageDetailView: View {
     private var content: some View {
         switch tab {
         case .translation:
-            TextBody(text: message.translation)
+            if !translation.isEmpty {
+                TextBody(text: translation)
+            } else {
+                VStack(spacing: 10) {
+                    if translating {
+                        ProgressView("AI 正在翻译…")
+                    } else {
+                        if let translateError {
+                            Text(translateError).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }
+                        Button(translateError == nil ? "翻译成\(state.settings.targetLanguage)" : "重试") {
+                            Task { await runTranslation() }
+                        }
+                        .disabled(state.makeAIClient() == nil)
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .original:
             TextBody(text: bodyText.isEmpty ? message.snippet : bodyText)
         case .html:

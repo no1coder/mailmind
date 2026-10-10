@@ -533,12 +533,16 @@ final class AppState {
         let rules = settings.mailRules
         let db = self.db
         var attempted = Set<String>()
+        // 并发数：遇到限流就减半；被限流的邮件保持待分析（多取 rateLimited 封跳过它们），下次同步自动重试，不算失败。
+        var width = 6
+        var rateLimited = 0
         while true {
-            let batch = ((try? db.pendingAIMessages(limit: 6)) ?? []).filter { !attempted.contains($0.id) }
+            let batch = ((try? db.pendingAIMessages(limit: width + rateLimited)) ?? [])
+                .filter { !attempted.contains($0.id) }.prefix(width)
             if batch.isEmpty { break }
             attempted.formUnion(batch.map(\.id))
             statusText = "AI 正在分析，剩余 \(db.pendingAICount()) 封…"
-            await withTaskGroup(of: Void.self) { group in
+            let limited = await withTaskGroup(of: Bool.self) { group in
                 for m in batch {
                     group.addTask {
                         let rule = MailRule.firstMatch(rules, for: m, text: String(m.bodyText.prefix(5000)))
@@ -547,7 +551,7 @@ final class AppState {
                         // 勾选了「验证码除外」的规则需要 AI 先判断是不是验证码。
                         if let c = ruleCategory, rule?.exceptCodes != true, [.marketing, .spam, .social, .notification].contains(c) {
                             try? db.saveAnalysis(id: m.id, Classifier.localAnalysis(for: m, category: c))
-                            return
+                            return false
                         }
                         do {
                             var result = try await Classifier.analyze(m, client: client, options: options)
@@ -555,14 +559,36 @@ final class AppState {
                                 result.apply(category: c)
                             }
                             try db.saveAnalysis(id: m.id, result)
+                        } catch let error as AIError where error.isRateLimited {
+                            return true
                         } catch {
                             try? db.markAIFailed(id: m.id, error: error.localizedDescription)
                         }
+                        return false
                     }
                 }
+                return await group.reduce(0) { $0 + ($1 ? 1 : 0) }
+            }
+            if limited > 0 {
+                rateLimited += limited
+                width = max(1, width / 2)
             }
             reload()
         }
+        if rateLimited > 0 {
+            lastErrors.append("AI 服务限流，\(rateLimited) 封邮件将在下次同步时自动重新分析")
+        }
+    }
+
+    /// 打开外文邮件时按需翻译，结果存入本地库。
+    func translate(_ m: MailMessage) async throws -> String {
+        guard let client = makeAIClient() else { throw AIError.notConfigured }
+        var full = m
+        full.bodyText = (try? db.body(id: m.id).text) ?? m.snippet
+        let text = try await Classifier.translate(full, client: client, targetLanguage: settings.targetLanguage)
+        try db.setTranslation(id: m.id, text)
+        if let i = messages.firstIndex(where: { $0.id == m.id }) { messages[i].translation = text }
+        return text
     }
 
     private func notificationPolicy() -> NotificationPolicy {

@@ -123,7 +123,7 @@ final class ClassifierTests: XCTestCase {
     }
 
     func testCustomRulesInPrompt() {
-        let p = Classifier.systemPrompt(AnalysisOptions(translate: true, targetLanguage: "简体中文", customRules: "老板的邮件都重要"))
+        let p = Classifier.systemPrompt(AnalysisOptions(targetLanguage: "简体中文", customRules: "老板的邮件都重要"))
         XCTAssertTrue(p.contains("老板的邮件都重要"))
     }
 }
@@ -140,7 +140,7 @@ final class DatabaseTests: XCTestCase {
 
         XCTAssertEqual(try db.pendingAIMessages(limit: 10).first?.bodyText, "Please pay")
         try db.saveAnalysis(id: m.id, AIAnalysis(category: "账单", importance: .high, language: "en",
-                                                  summary: "发票", translation: "请付款", action: "付款", reason: ""))
+                                                  summary: "发票", action: "付款", reason: ""))
         XCTAssertEqual(try db.messages(filter: .important).count, 1)
         XCTAssertEqual(try db.messages(filter: .actionNeeded).count, 1)
         XCTAssertEqual(try db.messages(filter: .all, search: "Invoice").count, 1)

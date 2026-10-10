@@ -312,12 +312,16 @@ final class Database: @unchecked Sendable {
 
     func saveAnalysis(id: String, _ a: AIAnalysis) throws {
         try run("""
-        UPDATE messages SET ai_status = 1, category = ?, importance = ?, summary = ?, translation = ?,
+        UPDATE messages SET ai_status = 1, category = ?, importance = ?, summary = ?,
             action = ?, reason = ?, language = ?, headline = ?, notify_level = ?, deadline = ?, code = ?,
             ai_error = '' WHERE id = ?
-        """, [.text(a.category), .text(a.importance.rawValue), .text(a.summary), .text(a.translation),
+        """, [.text(a.category), .text(a.importance.rawValue), .text(a.summary),
               .text(a.action), .text(a.reason), .text(a.language), .text(a.headline), .text(a.notify.rawValue),
               .text(a.deadline), .text(a.code), .text(id)])
+    }
+
+    func setTranslation(id: String, _ text: String) throws {
+        try run("UPDATE messages SET translation = ? WHERE id = ?", [.text(text), .text(id)])
     }
 
     func markAIFailed(id: String, error: String) throws {
